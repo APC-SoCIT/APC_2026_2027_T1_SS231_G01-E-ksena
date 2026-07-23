@@ -3,7 +3,7 @@ Group: ALT_RUN (SS231)
 
 Members:
 
-Paul Brian Sumilhig
-Ezekiel Galauran
-Peter Arquines Jr.
-Jesmark David Presbitero
+- Paul Brian Sumilhig
+- Ezekiel Galauran
+- Peter Arquines Jr.
+- Jesmark David Presbitero
