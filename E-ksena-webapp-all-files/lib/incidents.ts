@@ -1,8 +1,3 @@
-/**
- * Incident types and status for Responder Web.
- * Uses existing reports table; status can be extended in DB later.
- */
-
 export type IncidentStatus =
   | 'pending'
   | 'accepted'

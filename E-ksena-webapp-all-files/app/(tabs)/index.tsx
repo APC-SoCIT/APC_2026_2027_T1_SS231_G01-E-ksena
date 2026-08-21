@@ -1,427 +1,733 @@
-import { useState, useEffect, useMemo } from 'react';
-import { View, Text, ActivityIndicator, StyleSheet, Platform } from 'react-native';
-import { GoogleMap, useJsApiLoader, Marker } from '@react-google-maps/api';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { View, Text, ActivityIndicator, StyleSheet, Pressable, ScrollView, Alert } from 'react-native';
+import { GoogleMap, useJsApiLoader, Marker, DirectionsService, DirectionsRenderer, OverlayView } from '@react-google-maps/api';
+import { useFocusEffect } from '@react-navigation/native';
 import * as Location from 'expo-location';
+import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/context/auth';
+import { useRoleTheme } from '@/context/role-theme';
 import {
   Spacing,
   FontSizes,
-  Fonts,
-  Radius,
-  BG_BASE,
-  BG_SURFACE,
-  BG_INPUT,
-  ACCENT_AMBER,
-  ACCENT_BLUE,
+  BRAND_RED,
   TEXT_PRIMARY,
   TEXT_SECONDARY,
-  TEXT_MUTED,
+  WHITE,
+  OFF_WHITE,
   BORDER,
-  BORDER_SUBTLE,
-  STATUS_GREEN,
+  Radius,
+  CardShadow,
+  DANGER_BG,
+  DANGER_BORDER,
+  SUCCESS,
+  SUCCESS_BG,
 } from '@/constants/theme';
+import { MAKATI_CENTER, isWithinMakati, haversineKm } from '@/lib/makati';
+import {
+  getEmergencyTypesForRole,
+  emergencyTypeLabel,
+  nextStatusAction,
+  EMERGENCY_STATUS_LABELS,
+  type EmergencyStatus,
+} from '@/lib/emergency';
 
-const MOA_COORDS = { lat: 14.5351, lng: 120.9820 };
+interface EmergencyReport {
+  id: string;
+  lat: number;
+  lng: number;
+  classified_as?: string;
+  status: EmergencyStatus;
+  timestamp?: string;
+}
+
+function hasValidCoords(lat: number | null, lng: number | null): boolean {
+  return (
+    lat != null &&
+    lng != null &&
+    !(lat === 0 && lng === 0) &&
+    !Number.isNaN(lat) &&
+    !Number.isNaN(lng)
+  );
+}
+
+const MARKER_ICON_BY_STATUS: Record<string, string> = {
+  matched: 'http://maps.google.com/mapfiles/ms/icons/red-dot.png',
+  responding: 'http://maps.google.com/mapfiles/ms/icons/orange-dot.png',
+  pending: 'http://maps.google.com/mapfiles/ms/icons/red-dot.png',
+};
+const RESPONDER_ICON = 'http://maps.google.com/mapfiles/ms/icons/blue-dot.png';
 
 export default function MapScreen() {
-  const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
-  const googleMapsApiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ?? '';
+  const { user } = useAuth();
+  const theme = useRoleTheme();
+  const allowedTypes = useMemo(() => getEmergencyTypesForRole(user?.role), [user?.role]);
 
-  const mapHeight = Platform.OS === 'web' ? 520 : 300;
+  const [reports, setReports] = useState<EmergencyReport[]>([]);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
+  const [responderLocation, setResponderLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [addressCache, setAddressCache] = useState<Record<string, string>>({});
+  const [directionsResult, setDirectionsResult] = useState<google.maps.DirectionsResult | null>(null);
+  const [directionsFailed, setDirectionsFailed] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const geocoderRef = useRef<google.maps.Geocoder | null>(null);
+
+  const mapHeight = 640;
   const containerStyle = useMemo(() => ({ width: '100%', height: mapHeight }), [mapHeight]);
 
   const { isLoaded, loadError } = useJsApiLoader({
     id: 'google-map-script',
-    googleMapsApiKey,
+    googleMapsApiKey: 'AIzaSyCzcIhAoj9O07jszQt4knTyvb9fcUTAfiI',
   });
+
+  const visibleReports = useMemo(() => reports.filter((r) => !dismissedIds.has(r.id)), [reports, dismissedIds]);
+
+  const selectedReport = useMemo(
+    () => visibleReports.find((r) => r.id === selectedId) ?? null,
+    [visibleReports, selectedId]
+  );
+
+  const mapCenter = useMemo(() => {
+    if (selectedReport) return { lat: selectedReport.lat, lng: selectedReport.lng };
+    return MAKATI_CENTER;
+  }, [selectedReport]);
+
+  const fetchReports = useCallback(async () => {
+    setFetchError(null);
+    if (allowedTypes.length === 0) {
+      setReports([]);
+      return;
+    }
+    const selectCols = 'report_id, report_location_lat, report_location_lng, classified_as, status, timestamp';
+    let data: unknown[] | null = null;
+    let error: { message: string } | null = null;
+
+    const first = await supabase
+      .from('reports')
+      .select(selectCols)
+      .in('classified_as', allowedTypes)
+      .neq('status', 'resolved');
+    data = first.data;
+    error = first.error;
+
+    if (error && /column.*status.*does not exist/i.test(error.message)) {
+      const fallback = await supabase
+        .from('reports')
+        .select('report_id, report_location_lat, report_location_lng, classified_as, timestamp')
+        .in('classified_as', allowedTypes);
+      data = fallback.data;
+      error = fallback.error;
+    }
+
+    if (error) {
+      setFetchError(error.message);
+      return;
+    }
+
+    const locations: EmergencyReport[] = [];
+    for (const row of (data ?? []) as Record<string, unknown>[]) {
+      const lat = row.report_location_lat as number | null;
+      const lng = row.report_location_lng as number | null;
+      if (!hasValidCoords(lat, lng)) continue;
+      if (!isWithinMakati(lat, lng)) continue; // defensive: never dispatch/show outside Makati
+
+      locations.push({
+        id: String(row.report_id ?? ''),
+        lat: Number(lat),
+        lng: Number(lng),
+        classified_as: row.classified_as as string | undefined,
+        status: ((row.status as EmergencyStatus) ?? 'matched'),
+        timestamp: row.timestamp as string | undefined,
+      });
+    }
+    setReports(locations);
+  }, [allowedTypes.join(',')]);
+
+  useEffect(() => {
+    fetchReports();
+  }, [fetchReports]);
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchReports();
+    }, [fetchReports])
+  );
+
+  useEffect(() => {
+    if (allowedTypes.length === 0) return;
+    const channel = supabase
+      .channel('reports-changes-map')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'reports' }, () => {
+        fetchReports();
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [fetchReports, allowedTypes.join(',')]);
 
   useEffect(() => {
     let subscription: Location.LocationSubscription | null = null;
-    let intervalId: ReturnType<typeof setInterval> | null = null;
     let cancelled = false;
-
     (async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') return;
       try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') return;
-
-        if (Platform.OS === 'web') {
-          const updateLocation = async () => {
+        subscription = await Location.watchPositionAsync(
+          { accuracy: Location.Accuracy.High, timeInterval: 5000, distanceInterval: 15 },
+          (loc) => {
             if (cancelled) return;
-            try {
-              const loc = await Location.getCurrentPositionAsync({
-                accuracy: Location.Accuracy.Balanced,
-              });
-              if (!cancelled) {
-                setLocation({
-                  lat: loc.coords.latitude,
-                  lng: loc.coords.longitude,
-                });
-              }
-            } catch {
-              // ignore single failure
-            }
-          };
-          await updateLocation();
-          intervalId = setInterval(updateLocation, 10000);
-        } else {
-          subscription = await Location.watchPositionAsync(
-            { accuracy: Location.Accuracy.High, distanceInterval: 10 },
-            (newLocation) => {
-              if (!cancelled) {
-                setLocation({
-                  lat: newLocation.coords.latitude,
-                  lng: newLocation.coords.longitude,
-                });
-              }
-            }
-          );
-        }
+            setResponderLocation({ lat: loc.coords.latitude, lng: loc.coords.longitude });
+          }
+        );
       } catch {
-        // permissions or location error
+
       }
     })();
-
     return () => {
       cancelled = true;
-      if (intervalId != null) clearInterval(intervalId);
-      if (subscription != null) {
-        try {
-          if (typeof (subscription as { remove?: () => void }).remove === 'function') {
-            (subscription as { remove: () => void }).remove();
-          }
-        } catch {
-          // avoid LocationEventEmitter.removeSubscription errors on unmount (e.g. logout)
-        }
-      }
+      subscription?.remove();
     };
   }, []);
 
-  if (!googleMapsApiKey) {
-    return (
-      <View style={styles.errorContainer}>
-        <Text style={styles.errorIcon}>!</Text>
-        <Text style={styles.errorText}>MAP KEY MISSING</Text>
-        <Text style={styles.errorDetail}>
-          Set EXPO_PUBLIC_GOOGLE_MAPS_API_KEY before building or running the app.
-        </Text>
-      </View>
+  useEffect(() => {
+    setDirectionsResult(null);
+    setDirectionsFailed(false);
+    setStatusError(null);
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (selectedReport?.status !== 'responding') return;
+    setDirectionsResult(null);
+    setDirectionsFailed(false);
+
+  }, [responderLocation?.lat, responderLocation?.lng]);
+
+  useEffect(() => {
+    if (!selectedReport || !isLoaded || addressCache[selectedReport.id]) return;
+    if (typeof google === 'undefined') return;
+    if (!geocoderRef.current) geocoderRef.current = new google.maps.Geocoder();
+    geocoderRef.current.geocode(
+      { location: { lat: selectedReport.lat, lng: selectedReport.lng } },
+      (results, status) => {
+        if (status === 'OK' && results && results[0]) {
+          setAddressCache((prev) => ({ ...prev, [selectedReport.id]: results[0].formatted_address }));
+        }
+      }
     );
-  }
+  }, [selectedReport, isLoaded, addressCache]);
+
+  const responderInMakati = responderLocation ? isWithinMakati(responderLocation.lat, responderLocation.lng) : false;
+  const shouldRoute = !!selectedReport && !!responderLocation && responderInMakati && !directionsResult && !directionsFailed;
+
+  const straightLineKm = useMemo(() => {
+    if (!selectedReport || !responderLocation) return null;
+    return haversineKm(responderLocation.lat, responderLocation.lng, selectedReport.lat, selectedReport.lng);
+  }, [selectedReport, responderLocation]);
+
+  const routeMidpoint = useMemo(() => {
+    const path = directionsResult?.routes?.[0]?.overview_path;
+    if (!path || path.length === 0) return null;
+    const mid = path[Math.floor(path.length / 2)];
+    return { lat: mid.lat(), lng: mid.lng() };
+  }, [directionsResult]);
+
+  const handleStatusAction = async (report: EmergencyReport) => {
+    const action = nextStatusAction(report.status);
+    if (!action) return;
+    setStatusError(null);
+    const update: Record<string, unknown> = { status: action.next };
+    if (action.next === 'responding') {
+      update.responder_username = user?.username ?? null;
+    }
+    const { error } = await supabase.from('reports').update(update).eq('report_id', report.id);
+    if (error) {
+      const hint = /(status|responder_username).*column|column.*(status|responder_username)/i.test(error.message)
+        ? ' Run supabase/reports-add-status.sql in the Supabase SQL Editor to add the missing columns.'
+        : '';
+      setStatusError(error.message + hint);
+      Alert.alert('Could not update status', error.message + hint);
+      return;
+    }
+    if (action.next === 'resolved') {
+      setReports((prev) => prev.filter((r) => r.id !== report.id));
+      setSelectedId(null);
+    } else {
+      setReports((prev) => prev.map((r) => (r.id === report.id ? { ...r, status: action.next } : r)));
+    }
+  };
+
+  const handleDecline = (report: EmergencyReport) => {
+    setDismissedIds((prev) => new Set(prev).add(report.id));
+    setSelectedId((current) => (current === report.id ? null : current));
+  };
 
   if (loadError) {
     return (
       <View style={styles.errorContainer}>
-        <Text style={styles.errorIcon}>!</Text>
-        <Text style={styles.errorText}>MAP SYSTEM ERROR</Text>
-        <Text style={styles.errorDetail}>{loadError.message}</Text>
+        <Text style={styles.errorText}>Map Error: {loadError.message}</Text>
       </View>
     );
   }
 
-  return (
-    <View style={styles.container}>
-      {/* Page header */}
-      <Text style={styles.title}>INCIDENTS & YOUR LOCATION</Text>
-      <Text style={styles.subtitle}>Real-time position tracking and nearby incident markers</Text>
+  const route = directionsResult?.routes?.[0]?.legs?.[0];
 
-      {/* Tactical HUD Frame */}
-      <View style={styles.hudOuter}>
-        {/* Corner brackets */}
-        <View style={[styles.cornerBracket, styles.cornerTL]} />
-        <View style={[styles.cornerBracket, styles.cornerTR]} />
-        <View style={[styles.cornerBracket, styles.cornerBL]} />
-        <View style={[styles.cornerBracket, styles.cornerBR]} />
-
-        {/* Status bar top */}
-        <View style={styles.hudStatusBar}>
-          <View style={styles.statusDot} />
-          <Text style={styles.hudStatusText}>LIVE FEED</Text>
-          <Text style={styles.hudStatusRight}>
-            {location ? 'GPS LOCKED' : 'ACQUIRING...'}
-          </Text>
-        </View>
-
-        {/* Map container */}
-        <View style={[styles.mapFrame, { height: mapHeight }]}>
-          {isLoaded ? (
-            <GoogleMap mapContainerStyle={containerStyle} center={location || MOA_COORDS} zoom={14}>
-              {location && (
-                <Marker
-                  position={location}
-                  label="You"
-                  icon="https://maps.google.com/mapfiles/ms/icons/blue-dot.png"
-                />
-              )}
-              <Marker position={MOA_COORDS} label="MOA" title="SM Mall of Asia" />
-            </GoogleMap>
-          ) : (
-            <View style={styles.loaderBox}>
-              <ActivityIndicator size="large" color={ACCENT_AMBER} />
-              <Text style={styles.loaderText}>INITIALIZING MAP...</Text>
-            </View>
-          )}
-        </View>
-      </View>
-
-      {/* Coordinate readout – terminal style */}
-      <View style={styles.coordsCard}>
-        <View style={styles.coordsAccent} />
-        <View style={styles.coordsHeader}>
-          <Text style={styles.coordsLabel}>COORDINATE READOUT</Text>
-          <View style={[styles.statusIndicator, { backgroundColor: location ? STATUS_GREEN : TEXT_MUTED }]} />
-        </View>
-        {location ? (
-          <View style={styles.coordsBody}>
-            <Text style={styles.coordsLine}>
-              <Text style={styles.coordsKey}>LAT  </Text>
-              <Text style={styles.coordsValue}>{location.lat.toFixed(6)}</Text>
-            </Text>
-            <Text style={styles.coordsLine}>
-              <Text style={styles.coordsKey}>LNG  </Text>
-              <Text style={styles.coordsValue}>{location.lng.toFixed(6)}</Text>
-            </Text>
-            <Text style={styles.coordsDMS}>
-              {toDMS(location.lat, 'lat')} · {toDMS(location.lng, 'lng')}
-            </Text>
-          </View>
-        ) : (
-          <Text style={styles.coordsWaiting}>Awaiting GPS signal...</Text>
-        )}
-      </View>
+  const mapPane = (
+    <View style={[styles.mapFrame, { height: mapHeight }]}>
+      {isLoaded ? (
+        <GoogleMap mapContainerStyle={containerStyle} center={mapCenter} zoom={selectedReport ? 16 : 13}>
+          {visibleReports.map((r) => (
+            <Marker
+              key={r.id}
+              position={{ lat: r.lat, lng: r.lng }}
+              title={emergencyTypeLabel(r.classified_as)}
+              icon={MARKER_ICON_BY_STATUS[r.status] ?? MARKER_ICON_BY_STATUS.matched}
+              onClick={() => setSelectedId(r.id)}
+            />
+          ))}
+          {responderLocation ? (
+            <Marker position={responderLocation} title="Your location" icon={RESPONDER_ICON} />
+          ) : null}
+          {shouldRoute && selectedReport && responderLocation ? (
+            <DirectionsService
+              options={{
+                origin: responderLocation,
+                destination: { lat: selectedReport.lat, lng: selectedReport.lng },
+                travelMode: google.maps.TravelMode.DRIVING,
+              }}
+              callback={(result, status) => {
+                if (status === 'OK' && result) setDirectionsResult(result);
+                else setDirectionsFailed(true);
+              }}
+            />
+          ) : null}
+          {directionsResult ? (
+            <DirectionsRenderer
+              options={{
+                directions: directionsResult,
+                suppressMarkers: true,
+                polylineOptions: {
+                  strokeColor: theme.primary,
+                  strokeWeight: 6,
+                  strokeOpacity: 0.9,
+                },
+              }}
+            />
+          ) : null}
+          {directionsResult && routeMidpoint && route ? (
+            <OverlayView
+              position={routeMidpoint}
+              mapPaneName={OverlayView.OVERLAY_LAYER}
+              getPixelPositionOffset={(width, height) => ({ x: -(width / 2), y: -(height + 8) })}
+            >
+              <View
+                style={[styles.routeBubble, { borderColor: theme.primary }]}
+                pointerEvents="none"
+              >
+                <Text style={[styles.routeBubbleTime, { color: theme.primary }]}>{route.duration?.text}</Text>
+                <Text style={styles.routeBubbleDistance}>{route.distance?.text}</Text>
+              </View>
+            </OverlayView>
+          ) : null}
+        </GoogleMap>
+      ) : (
+        <ActivityIndicator size="large" color={BRAND_RED} />
+      )}
     </View>
+  );
+
+  const locationText = selectedReport
+    ? addressCache[selectedReport.id] ?? `${selectedReport.lat.toFixed(5)}, ${selectedReport.lng.toFixed(5)}`
+    : '';
+  const distanceText = route?.distance?.text ?? (straightLineKm != null ? `~${straightLineKm.toFixed(2)} km` : '—');
+  const etaText = route?.duration?.text ?? '—';
+
+  const selectedCard = selectedReport ? (
+    <View style={[styles.card, CardShadow, styles.selectedCard]}>
+      {selectedReport.status === 'matched' ? (
+
+        <>
+          <View style={[styles.matchPill, { borderColor: theme.primary }]}>
+            <Text style={[styles.matchPillText, { color: theme.primary }]}>New Emergency Match</Text>
+          </View>
+          <View style={styles.reportHeaderRow}>
+            <Text style={styles.selectedTitle}>{emergencyTypeLabel(selectedReport.classified_as)}</Text>
+            {route?.duration?.text ? <Text style={styles.etaAway}>{route.duration.text} away</Text> : null}
+          </View>
+          <Text style={styles.selectedDetail}>{locationText}</Text>
+          {responderLocation && !responderInMakati ? (
+            <Text style={styles.hintText}>Your current location is outside Makati City, so routing is unavailable.</Text>
+          ) : null}
+
+          <View style={styles.statsRow}>
+            <View style={styles.statBlock}>
+              <Text style={styles.statLabel}>DISTANCE</Text>
+              <Text style={styles.statValue}>{distanceText}</Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statBlock}>
+              <Text style={styles.statLabel}>EST. TRAVEL TIME</Text>
+              <Text style={styles.statValue}>{etaText}</Text>
+            </View>
+          </View>
+
+          {statusError ? <Text style={styles.statusErrorText}>{statusError}</Text> : null}
+
+          <View style={styles.acceptRow}>
+            <Pressable onPress={() => handleDecline(selectedReport)} style={styles.declineBtn}>
+              <Text style={styles.declineBtnText}>Decline</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => handleStatusAction(selectedReport)}
+              style={[styles.acceptBtn, { backgroundColor: theme.primary }]}
+            >
+              <Text style={styles.acceptBtnText}>Accept</Text>
+            </Pressable>
+          </View>
+        </>
+      ) : (
+        <>
+          <View style={styles.reportHeaderRow}>
+            <Text style={styles.selectedTitle}>{emergencyTypeLabel(selectedReport.classified_as)}</Text>
+            <View style={styles.statusBadge}>
+              <Text style={styles.statusBadgeText}>{EMERGENCY_STATUS_LABELS[selectedReport.status]}</Text>
+            </View>
+          </View>
+          <Text style={styles.selectedDetail}>Location: {locationText}</Text>
+          {responderLocation && !responderInMakati ? (
+            <Text style={styles.hintText}>Your current location is outside Makati City, so routing is unavailable.</Text>
+          ) : null}
+          {selectedReport.status === 'responding' ? (
+            <Text style={styles.hintText}>Tracking your live location as you head to the scene.</Text>
+          ) : null}
+          {route ? (
+            <Text style={styles.selectedDetail}>
+              Route: {route.distance?.text} · ETA {route.duration?.text}
+            </Text>
+          ) : directionsFailed && straightLineKm != null ? (
+            <Text style={styles.selectedDetail}>
+              Straight-line distance: ~{straightLineKm.toFixed(2)} km (turn-by-turn route unavailable)
+            </Text>
+          ) : null}
+          {statusError ? <Text style={styles.statusErrorText}>{statusError}</Text> : null}
+          {nextStatusAction(selectedReport.status) ? (
+            <Pressable
+              onPress={() => handleStatusAction(selectedReport)}
+              style={[styles.statusBtn, { backgroundColor: theme.primary }]}
+            >
+              <Text style={styles.statusBtnText}>{nextStatusAction(selectedReport.status)?.label}</Text>
+            </Pressable>
+          ) : null}
+        </>
+      )}
+    </View>
+  ) : null;
+
+  const emergencyList = (
+    <>
+      <Text style={styles.listTitle}>Active Emergencies ({visibleReports.length})</Text>
+      {visibleReports.length === 0 ? (
+        <Text style={styles.emptyText}>No active emergencies matched to your role right now.</Text>
+      ) : (
+        visibleReports.map((r) => (
+          <Pressable
+            key={r.id}
+            onPress={() => setSelectedId(r.id)}
+            style={[
+              styles.listCard,
+              CardShadow,
+              r.id === selectedId && { borderColor: theme.primary },
+            ]}
+          >
+            <Text style={styles.listCardTitle}>{emergencyTypeLabel(r.classified_as)}</Text>
+            <Text style={styles.listCardSubtitle}>{EMERGENCY_STATUS_LABELS[r.status]}</Text>
+          </Pressable>
+        ))
+      )}
+    </>
+  );
+
+  return (
+    <ScrollView style={styles.screen} contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+      <Text style={styles.title}>Incidents</Text>
+      <Text style={styles.subtitle}>Active emergencies matched to {theme.displayName} within Makati City</Text>
+
+      {fetchError ? (
+        <View style={[styles.card, CardShadow, styles.errorCard]}>
+          <Text style={styles.errorText}>Could not load reports: {fetchError}</Text>
+          <Text style={styles.errorHint}>Check the connection and try again.</Text>
+        </View>
+      ) : null}
+
+      <View style={styles.dashboardRow}>
+        <View style={styles.mapColumn}>{mapPane}</View>
+        <View style={[styles.sidebarColumn, { height: mapHeight }]}>
+          <ScrollView showsVerticalScrollIndicator={false}>
+            {selectedCard}
+            {emergencyList}
+          </ScrollView>
+        </View>
+      </View>
+    </ScrollView>
   );
 }
 
-/** Convert decimal degrees to DMS string */
-function toDMS(dd: number, type: 'lat' | 'lng'): string {
-  const dir = type === 'lat' ? (dd >= 0 ? 'N' : 'S') : dd >= 0 ? 'E' : 'W';
-  const abs = Math.abs(dd);
-  const d = Math.floor(abs);
-  const m = Math.floor((abs - d) * 60);
-  const s = ((abs - d - m / 60) * 3600).toFixed(1);
-  return `${d}°${m}'${s}"${dir}`;
-}
-
 const styles = StyleSheet.create({
-  container: {
+  screen: {
     flex: 1,
-    padding: Spacing.lg,
-    backgroundColor: BG_BASE,
+    backgroundColor: OFF_WHITE,
   },
-
-  /* ── Header ────────────────────────────────────────────── */
+  container: {
+    padding: Spacing.lg,
+    paddingBottom: Spacing.xl,
+  },
   title: {
     fontSize: FontSizes.subtitle,
     fontWeight: '600',
     color: TEXT_PRIMARY,
-    fontFamily: Fonts.heading,
-    letterSpacing: 2,
-    textTransform: 'uppercase',
     marginBottom: Spacing.xs,
   },
   subtitle: {
     fontSize: FontSizes.sm,
     color: TEXT_SECONDARY,
-    fontFamily: Fonts.body,
     marginBottom: Spacing.md,
-    letterSpacing: 0.3,
   },
-
-  /* ── HUD Frame ─────────────────────────────────────────── */
-  hudOuter: {
-    position: 'relative',
-    backgroundColor: BG_SURFACE,
+  dashboardRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.lg,
+    marginBottom: Spacing.md,
+  },
+  mapColumn: {
+    flex: 1.6,
+    minWidth: 0,
+  },
+  sidebarColumn: {
+    flex: 1,
+    maxWidth: 380,
+  },
+  mapFrame: {
     borderWidth: 1,
     borderColor: BORDER,
-    borderRadius: Radius.sm,
+    borderRadius: Radius.lg,
     overflow: 'hidden',
+    minHeight: 300,
+    backgroundColor: WHITE,
+    marginBottom: Spacing.md,
   },
-  cornerBracket: {
-    position: 'absolute',
-    width: 20,
-    height: 20,
-    zIndex: 5,
-  },
-  cornerTL: {
-    top: 0,
-    left: 0,
-    borderTopWidth: 2,
-    borderLeftWidth: 2,
-    borderColor: ACCENT_AMBER,
-  },
-  cornerTR: {
-    top: 0,
-    right: 0,
-    borderTopWidth: 2,
-    borderRightWidth: 2,
-    borderColor: ACCENT_AMBER,
-  },
-  cornerBL: {
-    bottom: 0,
-    left: 0,
-    borderBottomWidth: 2,
-    borderLeftWidth: 2,
-    borderColor: ACCENT_AMBER,
-  },
-  cornerBR: {
-    bottom: 0,
-    right: 0,
-    borderBottomWidth: 2,
-    borderRightWidth: 2,
-    borderColor: ACCENT_AMBER,
-  },
-
-  /* HUD top status bar */
-  hudStatusBar: {
-    flexDirection: 'row',
+  routeBubble: {
+    backgroundColor: WHITE,
+    borderWidth: 2,
+    borderRadius: Radius.lg,
+    paddingVertical: Spacing.xs,
+    paddingHorizontal: Spacing.sm,
     alignItems: 'center',
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-    backgroundColor: BG_INPUT,
-    borderBottomWidth: 1,
-    borderBottomColor: BORDER_SUBTLE,
-    zIndex: 3,
   },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: STATUS_GREEN,
-    marginRight: Spacing.sm,
+  routeBubbleTime: {
+    fontSize: FontSizes.sm,
+    fontWeight: '700',
   },
-  hudStatusText: {
+  routeBubbleDistance: {
+    fontSize: FontSizes.xs,
+    color: TEXT_SECONDARY,
+  },
+  card: {
+    marginTop: Spacing.md,
+    padding: Spacing.lg,
+    backgroundColor: WHITE,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: Radius.lg,
+  },
+  selectedCard: {
+    marginTop: 0,
+    marginBottom: Spacing.lg,
+  },
+  reportHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  selectedTitle: {
+    fontSize: FontSizes.body,
+    fontWeight: '600',
+    color: TEXT_PRIMARY,
+    flexShrink: 1,
+  },
+  selectedDetail: {
+    fontSize: FontSizes.sm,
+    color: TEXT_SECONDARY,
+    marginBottom: Spacing.xs,
+  },
+  statusBadge: {
+    paddingVertical: 2,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: Radius.sm,
+    backgroundColor: SUCCESS_BG,
+  },
+  statusBadgeText: {
     fontSize: FontSizes.xs,
     fontWeight: '600',
-    color: STATUS_GREEN,
-    fontFamily: Fonts.body,
-    letterSpacing: 1.5,
-    flex: 1,
+    color: SUCCESS,
   },
-  hudStatusRight: {
+  statusBtn: {
+    marginTop: Spacing.sm,
+    alignSelf: 'flex-start',
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.md,
+  },
+  statusBtnText: {
+    fontSize: FontSizes.sm,
+    fontWeight: '600',
+    color: WHITE,
+  },
+  matchPill: {
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderRadius: Radius.sm,
+    paddingVertical: 2,
+    paddingHorizontal: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  matchPillText: {
     fontSize: FontSizes.xs,
-    color: TEXT_MUTED,
-    fontFamily: Fonts.body,
-    letterSpacing: 1,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
   },
-
-  /* Map itself */
-  mapFrame: {
-    minHeight: 300,
-    overflow: 'hidden',
+  etaAway: {
+    fontSize: FontSizes.sm,
+    fontWeight: '600',
+    color: TEXT_SECONDARY,
   },
-  loaderBox: {
-    flex: 1,
-    justifyContent: 'center',
+  statsRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: BG_INPUT,
-    gap: Spacing.md,
+    justifyContent: 'space-around',
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: BORDER,
+    paddingVertical: Spacing.md,
+    marginVertical: Spacing.md,
   },
-  loaderText: {
+  statBlock: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  statDivider: {
+    width: 1,
+    height: 32,
+    backgroundColor: BORDER,
+  },
+  statLabel: {
     fontSize: FontSizes.xs,
-    color: TEXT_MUTED,
-    fontFamily: Fonts.body,
-    letterSpacing: 1.5,
+    fontWeight: '600',
+    color: TEXT_SECONDARY,
+    letterSpacing: 0.3,
+    marginBottom: Spacing.xs,
   },
-
-  /* ── Error ─────────────────────────────────────────────── */
+  statValue: {
+    fontSize: FontSizes.subtitle,
+    fontWeight: '700',
+    color: TEXT_PRIMARY,
+  },
+  acceptRow: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+  },
+  declineBtn: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: Spacing.md,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: WHITE,
+  },
+  declineBtnText: {
+    fontSize: FontSizes.sm,
+    fontWeight: '600',
+    color: TEXT_SECONDARY,
+  },
+  acceptBtn: {
+    flex: 1.4,
+    alignItems: 'center',
+    paddingVertical: Spacing.md,
+    borderRadius: Radius.md,
+  },
+  acceptBtnText: {
+    fontSize: FontSizes.sm,
+    fontWeight: '700',
+    color: WHITE,
+  },
+  listTitle: {
+    fontSize: FontSizes.body,
+    fontWeight: '600',
+    color: TEXT_PRIMARY,
+    marginBottom: Spacing.md,
+  },
+  listCard: {
+    backgroundColor: WHITE,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
+  },
+  listCardTitle: {
+    fontSize: FontSizes.body,
+    fontWeight: '600',
+    color: TEXT_PRIMARY,
+    marginBottom: 2,
+  },
+  listCardSubtitle: {
+    fontSize: FontSizes.sm,
+    color: TEXT_SECONDARY,
+  },
+  emptyText: {
+    fontSize: FontSizes.sm,
+    color: TEXT_SECONDARY,
+    textAlign: 'center',
+    paddingVertical: Spacing.lg,
+  },
+  errorCard: {
+    backgroundColor: DANGER_BG,
+    borderColor: DANGER_BORDER,
+  },
+  errorHint: {
+    fontSize: FontSizes.sm,
+    color: TEXT_SECONDARY,
+    marginTop: Spacing.sm,
+  },
+  hintText: {
+    fontSize: FontSizes.xs,
+    color: TEXT_SECONDARY,
+    fontStyle: 'italic',
+    marginBottom: Spacing.xs,
+  },
+  statusErrorText: {
+    fontSize: FontSizes.xs,
+    color: BRAND_RED,
+    marginBottom: Spacing.xs,
+  },
   errorContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: BG_BASE,
-    padding: Spacing.xl,
-  },
-  errorIcon: {
-    fontSize: 32,
-    color: '#FF3B3B',
-    marginBottom: Spacing.md,
+    backgroundColor: DANGER_BG,
+    margin: Spacing.md,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: DANGER_BORDER,
   },
   errorText: {
-    fontSize: FontSizes.subtitle,
-    fontWeight: '700',
-    color: '#FF3B3B',
-    fontFamily: Fonts.heading,
-    letterSpacing: 2,
-    marginBottom: Spacing.sm,
-  },
-  errorDetail: {
-    fontSize: FontSizes.sm,
-    color: TEXT_SECONDARY,
-    fontFamily: Fonts.body,
-    textAlign: 'center',
-  },
-
-  /* ── Coordinate Readout ────────────────────────────────── */
-  coordsCard: {
-    marginTop: Spacing.lg,
-    backgroundColor: BG_SURFACE,
-    borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: Radius.sm,
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  coordsAccent: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 2,
-    backgroundColor: ACCENT_BLUE,
-  },
-  coordsHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.md + 2,
-    paddingBottom: Spacing.sm,
-  },
-  coordsLabel: {
-    fontSize: FontSizes.xs,
-    fontWeight: '600',
-    color: ACCENT_BLUE,
-    fontFamily: Fonts.heading,
-    letterSpacing: 2,
-  },
-  statusIndicator: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  coordsBody: {
-    paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.lg,
-  },
-  coordsLine: {
     fontSize: FontSizes.body,
-    marginBottom: Spacing.xs,
-  },
-  coordsKey: {
-    color: TEXT_MUTED,
-    fontFamily: Fonts.mono,
-    fontWeight: '500',
-    letterSpacing: 1,
-  },
-  coordsValue: {
-    color: STATUS_GREEN,
-    fontFamily: Fonts.mono,
-    fontWeight: '600',
-    letterSpacing: 0.5,
-  },
-  coordsDMS: {
-    fontSize: FontSizes.xs,
-    color: TEXT_SECONDARY,
-    fontFamily: Fonts.mono,
-    marginTop: Spacing.sm,
-    letterSpacing: 0.5,
-  },
-  coordsWaiting: {
-    fontSize: FontSizes.sm,
-    color: TEXT_MUTED,
-    fontFamily: Fonts.body,
-    paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.lg,
-    letterSpacing: 0.5,
+    color: BRAND_RED,
+    padding: Spacing.md,
+    textAlign: 'center',
   },
 });

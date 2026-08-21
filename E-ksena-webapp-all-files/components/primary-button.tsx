@@ -1,15 +1,5 @@
 import { Pressable, Text, StyleSheet, type ViewStyle, type TextStyle } from 'react-native';
-import {
-  ACCENT_AMBER,
-  ACCENT_AMBER_HOVER,
-  BG_BASE,
-  TEXT_PRIMARY,
-  BORDER,
-  Spacing,
-  FontSizes,
-  Fonts,
-  Radius,
-} from '@/constants/theme';
+import { Spacing, FontSizes, WHITE, Radius } from '@/constants/theme';
 import { useRoleTheme } from '@/context/role-theme';
 
 type PrimaryButtonProps = {
@@ -18,40 +8,15 @@ type PrimaryButtonProps = {
   style?: ViewStyle;
   textStyle?: TextStyle;
   disabled?: boolean;
-  /** Ghost = outline-only variant (for secondary/destructive actions) */
-  ghost?: boolean;
+
+  color?: string;
+  hoverColor?: string;
 };
 
-export function PrimaryButton({
-  title,
-  onPress,
-  style,
-  textStyle,
-  disabled,
-  ghost,
-}: PrimaryButtonProps) {
+export function PrimaryButton({ title, onPress, style, textStyle, disabled, color, hoverColor }: PrimaryButtonProps) {
   const theme = useRoleTheme();
-
-  if (ghost) {
-    return (
-      <Pressable
-        onPress={onPress}
-        disabled={disabled}
-        style={({ pressed }) => [
-          styles.button,
-          styles.ghostButton,
-          { borderColor: theme.primary },
-          pressed && { backgroundColor: 'rgba(255,255,255,0.04)' },
-          disabled && styles.buttonDisabled,
-          style,
-        ]}
-      >
-        <Text style={[styles.label, styles.ghostLabel, { color: theme.primary }, textStyle]}>
-          {title}
-        </Text>
-      </Pressable>
-    );
-  }
+  const bg = color ?? theme.primary;
+  const bgHover = hoverColor ?? theme.primaryHover;
 
   return (
     <Pressable
@@ -59,25 +24,13 @@ export function PrimaryButton({
       disabled={disabled}
       style={({ pressed }) => [
         styles.button,
-        {
-          backgroundColor: ACCENT_AMBER,
-          shadowColor: 'rgba(255,107,43,0.4)',
-          shadowOffset: { width: 0, height: 2 },
-          shadowOpacity: 0.5,
-          shadowRadius: 10,
-          elevation: 4,
-        },
-        pressed && {
-          backgroundColor: ACCENT_AMBER_HOVER,
-          transform: [{ translateY: -1 }],
-          shadowOpacity: 0.7,
-          shadowRadius: 16,
-        },
+        { backgroundColor: bg },
+        pressed && [styles.buttonPressed, { backgroundColor: bgHover }],
         disabled && styles.buttonDisabled,
         style,
       ]}
     >
-      <Text style={[styles.label, { color: BG_BASE }, textStyle]}>{title}</Text>
+      <Text style={[styles.label, textStyle]}>{title}</Text>
     </Pressable>
   );
 }
@@ -88,23 +41,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: Radius.sm,
+    borderRadius: Radius.md,
+  },
+  buttonPressed: {
+    opacity: 0.95,
   },
   buttonDisabled: {
-    opacity: 0.4,
+    opacity: 0.5,
   },
   label: {
-    fontSize: FontSizes.sm,
-    fontWeight: '700',
-    fontFamily: Fonts.heading,
-    letterSpacing: 1.5,
-    textTransform: 'uppercase',
-  },
-  ghostButton: {
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-  },
-  ghostLabel: {
-    // color set dynamically
+    color: WHITE,
+    fontSize: FontSizes.body,
+    fontWeight: '600',
   },
 });

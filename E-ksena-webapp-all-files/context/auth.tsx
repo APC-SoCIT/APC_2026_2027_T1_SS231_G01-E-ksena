@@ -1,5 +1,8 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import type { Session } from '@supabase/supabase-js';
 
+import { supabase } from '@/lib/supabase';
+import { signOutResponder } from '@/lib/auth-service';
 import type { RoleThemeKey } from '@/constants/theme';
 
 export type ResponderUser = {
@@ -8,46 +11,65 @@ export type ResponderUser = {
   email?: string;
 };
 
-type AuthState = {
+type AuthContextValue = {
   isResponder: boolean;
   user: ResponderUser | null;
-};
-
-type AuthContextValue = AuthState & {
-  login: (user: ResponderUser) => void;
-  logout: () => void;
-  updateProfile: (updates: Partial<Pick<ResponderUser, 'username' | 'email'>>) => void;
+  loading: boolean;
+  logout: () => Promise<void>;
+  updateProfile: (updates: Partial<Pick<ResponderUser, 'username'>>) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+function userFromSession(session: Session | null): ResponderUser | null {
+  if (!session?.user) return null;
+  const meta = session.user.user_metadata as Record<string, unknown>;
+  const role = meta.role as RoleThemeKey | undefined;
+  if (!role) return null;
+  return {
+    role,
+    username: (meta.username as string) ?? session.user.email ?? 'Responder',
+    email: session.user.email,
+  };
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<AuthState>({
-    isResponder: false,
-    user: null,
-  });
+  const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const login = useCallback((user: ResponderUser) => {
-    setState({ isResponder: true, user: { ...user } });
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setLoading(false);
+    });
+    const { data: subscription } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+      setLoading(false);
+    });
+    return () => {
+      subscription.subscription.unsubscribe();
+    };
   }, []);
 
-  const logout = useCallback(() => {
-    setState({ isResponder: false, user: null });
-  }, []);
+  const user = userFromSession(session);
 
-  const updateProfile = useCallback((updates: Partial<Pick<ResponderUser, 'username' | 'email'>>) => {
-    setState((prev) =>
-      prev.user
-        ? { ...prev, user: { ...prev.user, ...updates } }
-        : prev
-    );
-  }, []);
+  const logout = async () => {
+    await signOutResponder();
+  };
+
+  const updateProfile = async (updates: Partial<Pick<ResponderUser, 'username'>>) => {
+    const { error } = await supabase.auth.updateUser({ data: { ...updates } });
+    if (error) throw error;
+    const { data } = await supabase.auth.getSession();
+    setSession(data.session);
+  };
 
   return (
     <AuthContext.Provider
       value={{
-        ...state,
-        login,
+        isResponder: !!user,
+        user,
+        loading,
         logout,
         updateProfile,
       }}
