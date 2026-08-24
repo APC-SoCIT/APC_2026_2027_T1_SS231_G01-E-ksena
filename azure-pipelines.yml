@@ -1,0 +1,127 @@
+# ============================================================
+# E-ksena CI/CD Pipeline
+# Repo   : APC-SoCIT/APC_2026_2027_T1_SS231_G01-E-ksena
+# Branch : Web-app  (all source code lives here, NOT in main)
+# Agent  : Self-hosted on Windows Server 2025 VM via RDP
+# Target : IIS on the same VM
+# ============================================================
+
+trigger:
+  branches:
+    include:
+      - Web-app
+
+pool:
+  name: 'E-ksena.Staging'
+
+variables:
+  NODE_VERSION: '20.x'
+  BACKEND_DIR:  'E-ksena_Backend'
+  FRONTEND_DIR: 'E-ksena-webapp-all-files'
+  IIS_SITE_PATH: 'C:\inetpub\wwwroot\E-ksena'
+  ARTIFACT_NAME: 'drop'
+
+# ===========================================================
+# STAGE 1 - Build
+# ===========================================================
+stages:
+- stage: Build
+  displayName: 'Build Web App'
+  jobs:
+  - job: BuildJob
+    displayName: 'Install, Build and Archive'
+    steps:
+
+    - task: NodeTool@0
+      inputs:
+        versionSpec: '$(NODE_VERSION)'
+      displayName: 'Install Node.js $(NODE_VERSION)'
+
+    - script: npm run install:all
+      displayName: 'Install all dependencies (root + backend + frontend)'
+
+    - script: npm --prefix $(FRONTEND_DIR) run build:web
+      displayName: 'Build Expo web frontend (expo export --platform web)'
+
+    - task: ArchiveFiles@2
+      inputs:
+        rootFolderOrFile: '$(System.DefaultWorkingDirectory)'
+        includeRootFolder: false
+        archiveType: 'zip'
+        archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip'
+        replaceExistingArchive: true
+      displayName: 'Archive build output'
+
+    - task: PublishBuildArtifacts@1
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: '$(ARTIFACT_NAME)'
+        publishLocation: 'Container'
+      displayName: 'Publish artifact to pipeline'
+
+# ===========================================================
+# STAGE 2 - Deploy to IIS on Windows Server VM
+# ===========================================================
+- stage: Deploy
+  displayName: 'Deploy to IIS on Windows VM'
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - deployment: DeployToIIS
+    displayName: 'Deploy to IIS'
+    environment: 'E-ksena-Staging'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - task: DownloadBuildArtifacts@1
+            inputs:
+              buildType: 'current'
+              downloadType: 'single'
+              artifactName: '$(ARTIFACT_NAME)'
+              downloadPath: '$(System.ArtifactsDirectory)'
+            displayName: 'Download build artifact'
+
+          - task: PowerShell@2
+            displayName: 'Stop IIS, Deploy Files, Restart IIS'
+            inputs:
+              targetType: 'inline'
+              errorActionPreference: 'Stop'
+              failOnStderr: false
+              script: |
+                $zipPath    = "$(System.ArtifactsDirectory)\$(ARTIFACT_NAME)\$(Build.BuildId).zip"
+                $deployPath = "$(IIS_SITE_PATH)"
+
+                Write-Host "--- Stopping IIS ---"
+                iisreset /stop
+
+                Write-Host "--- Ensuring deployment directory exists ---"
+                if (-not (Test-Path $deployPath)) {
+                    New-Item -ItemType Directory -Path $deployPath -Force
+                    Write-Host "Created directory: $deployPath"
+                }
+
+                Write-Host "--- Cleaning old deployment files ---"
+                Remove-Item "$deployPath\*" -Recurse -Force -ErrorAction SilentlyContinue
+
+                Write-Host "--- Extracting new build from $zipPath to $deployPath ---"
+                Expand-Archive -Path $zipPath -DestinationPath $deployPath -Force
+
+                Write-Host "--- Starting IIS ---"
+                iisreset /start
+
+                Write-Host "--- Deployment complete. Files at: $deployPath ---"
+
+          - task: PowerShell@2
+            displayName: 'Verify IIS is Running'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $svc = Get-Service -Name W3SVC
+                Write-Host "IIS (W3SVC) status: $($svc.Status)"
+                if ($svc.Status -ne 'Running') {
+                    Write-Error "IIS did not start correctly after deployment!"
+                    exit 1
+                }
+                Write-Host "IIS is running. Deployment verified successfully."
