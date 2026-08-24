@@ -1,4 +1,6 @@
-# E-ksena Azure DevOps CI/CD — Complete Fix Guide
+# E-ksena Azure DevOps CI/CD — Complete Setup Guide
+
+This guide matches the current setup: Azure DevOps builds the `apcedgalauran` fork's `Web-app` branch on your self-hosted Windows VM, IIS serves the Expo web build, and the Express backend runs separately on that VM.
 
 ## What Was Wrong (Root Cause Analysis)
 
@@ -7,7 +9,7 @@
 | Pipeline ran on `main` branch | `main` only has `README.md` + `docs/` — zero source code |
 | Pipeline used .NET tasks (`VSBuild`, `NuGetCommand`) | The project is Node.js/Expo, not .NET — no `.sln` file exists |
 | Used `vmImage: ubuntu-latest` | Your self-hosted agent on the Windows VM was being ignored |
-| Fork (`apcedgalauran`) had the pipeline, not the original | The pipeline should live in the **original** `APC-SoCIT` repo |
+| Fork (`apcedgalauran`) has the pipeline | This is acceptable when the original repository cannot be connected; keep the fork synchronized with `upstream` |
 
 ---
 
@@ -35,8 +37,7 @@ APC_2026_2027_T1_SS231_G01-E-ksena/  (Web-app branch)
 
 ## The Corrected `azure-pipelines.yml`
 
-The file has been created at:
-[azure-pipelines.yml](file:///c:/Users/Ezekiel/Documents/code/alt%20run%20new%20folder%20original%20web%20app/azure-pipelines.yml)
+The file is [azure-pipelines.yml](azure-pipelines.yml).
 
 **Key decisions in the new pipeline:**
 
@@ -49,13 +50,15 @@ The file has been created at:
 | Deploy path | `C:\inetpub\wwwroot\E-ksena` | Standard IIS wwwroot subfolder |
 | Deploy job | `deployment:` type with `environment:` | Enables deployment tracking in Azure DevOps |
 
+The archive step packages only `E-ksena-webapp-all-files\dist`, with `includeRootFolder: false`. Deployment therefore creates `C:\inetpub\wwwroot\E-ksena\index.html` directly.
+
 ---
 
 ## Step-by-Step: How to Get This Working
 
-### Step 1 — Push the pipeline to the ORIGINAL repo's `Web-app` branch
+### Step 1 — Push the pipeline to your fork's `Web-app` branch
 
-You cannot push from your fork to `APC-SoCIT`. You need to either:
+Because you cannot connect the original repository, use your fork. From your local clone:
 
 **Option A — If you have write access to the original repo:**
 ```bash
@@ -78,16 +81,18 @@ git push origin Web-app
 2. Open a PR from `apcedgalauran/Web-app` → `APC-SoCIT/Web-app`
 3. Merge it — the pipeline will fire automatically
 
+For your current setup, use the fork directly: commit `azure-pipelines.yml` to the fork's `Web-app` branch and push it to `origin`.
+
 ---
 
-### Step 2 — Configure the Azure DevOps Pipeline to watch the ORIGINAL repo
+### Step 2 — Configure the Azure DevOps Pipeline to watch the fork
 
 1. Go to **Azure DevOps → Pipelines → your pipeline → Edit**
-2. Change the repository connection from `apcedgalauran/...` to `APC-SoCIT/APC_2026_2027_T1_SS231_G01-E-ksena`
-3. Set branch to **`Web-app`**
+2. Confirm the repository is `apcedgalauran/APC_2026_2027_T1_SS231_G01-E-ksena`
+3. Confirm the YAML path is `/azure-pipelines.yml`
+4. Set branch to **`Web-app`**
 
-OR create a brand new pipeline:
-- **Pipelines → New Pipeline → GitHub → APC-SoCIT repo → Existing YAML file → `/azure-pipelines.yml` on branch `Web-app`**
+Do not change the connection to the original repository if Azure DevOps cannot access it.
 
 ---
 
@@ -97,6 +102,9 @@ The Deploy stage references `environment: 'E-ksena-Staging'`. Create it:
 1. **Azure DevOps → Pipelines → Environments → New Environment**
 2. Name: `E-ksena-Staging`, Resource: `None`
 3. Click **Create**
+4. Open the environment's **Security** or **Pipeline permissions** and authorize this pipeline.
+
+The name must match `environment: 'E-ksena-Staging'` in the YAML. This fixes the error shown in the failed run.
 
 ---
 
@@ -150,24 +158,56 @@ iisreset /status
 | **Backend** (`E-ksena_Backend`) | Node.js Express (`node server.js`) | ✅ **Same VM**, but NOT through IIS — run as a Windows Service or PM2 |
 | **Mobile App** (`Mobile-app` branch) | Expo React Native | ❌ NOT on the VM — build with **Expo EAS Build** or deploy to app stores |
 
-### Backend on the VM (Node.js doesn't go through IIS directly)
+### Backend on the VM (Node.js does not go through IIS directly)
 
-IIS serves **static files** only. Your Node.js backend runs as a separate process. On the VM via PowerShell:
+IIS serves static files only. Keep the backend in a separate directory:
 
 ```powershell
-# Install PM2 globally to keep backend running
-npm install -g pm2
+New-Item -ItemType Directory -Path "C:\services\E-ksena-backend" -Force
+```
 
-# Start the backend
-cd C:\inetpub\wwwroot\E-ksena\E-ksena_Backend
+Copy the contents of the repository's `E-ksena_Backend` directory there. The target must contain `server.js` and `package.json` directly:
+
+```text
+C:\services\E-ksena-backend\server.js
+C:\services\E-ksena-backend\package.json
+```
+
+On the VM, install dependencies and PM2:
+
+```powershell
+cd "C:\services\E-ksena-backend"
+npm ci --omit=dev
+npm install --global pm2 pm2-windows-startup
+```
+
+Create `C:\services\E-ksena-backend\.env`. Never commit this file:
+
+```env
+NODE_ENV=production
+PORT=3000
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_KEY=your-production-service-key
+CORS_ORIGINS=http://your-server-hostname
+API_KEYS=your-long-random-api-key
+```
+
+The real values must be used on the VM. The backend requires the Supabase values and, in production, also requires `CORS_ORIGINS` and `API_KEYS`.
+
+Start and persist the backend:
+
+```powershell
 pm2 start server.js --name e-ksena-backend
-
-# Auto-start on reboot
-pm2 startup
+pm2 status
+pm2 logs e-ksena-backend
+pm2 save
+pm2-startup install
 pm2 save
 ```
 
-Then configure IIS **Application Request Routing (ARR)** or a reverse proxy to forward `/api/*` requests to `localhost:PORT` where your Node server listens.
+The process should show `online`. For later backend updates, replace the files, run `npm ci --omit=dev`, and use `pm2 restart e-ksena-backend`, followed by `pm2 save`.
+
+Then configure IIS **Application Request Routing (ARR)** and URL Rewrite to forward `/api/*` to `http://localhost:3000/api/*`. The frontend must use the VM hostname, not `http://localhost:3000`, because browser `localhost` means the visitor's computer.
 
 ---
 
@@ -189,17 +229,21 @@ git push origin Web-app
 ```
 
 > [!NOTE]
-> Your Azure DevOps pipeline should be connected to the **original `APC-SoCIT` repo**, not your fork. Your fork is just your personal working copy.
+> Your Azure DevOps pipeline is intentionally connected to the fork. The fork is the deployment source and must be synchronized with `upstream` before pushing `Web-app`.
 
 ---
 
 ## Summary Checklist
 
-- [ ] `azure-pipelines.yml` committed to **`APC-SoCIT` repo, `Web-app` branch**
-- [ ] Azure DevOps pipeline connected to **`APC-SoCIT` repo** (not the fork)
+- [ ] `azure-pipelines.yml` committed to the fork's `Web-app` branch
+- [ ] Azure DevOps pipeline connected to the `apcedgalauran` fork
 - [ ] Pipeline trigger set to **`Web-app`** branch
 - [ ] Agent pool `E-ksena.Staging` with `E-ksena-Virtual` agent showing **Online**
 - [ ] Environment `E-ksena-Staging` created in Azure DevOps
+- [ ] The environment is authorized for this pipeline
 - [ ] IIS installed on VM with site pointing to `C:\inetpub\wwwroot\E-ksena`
+- [ ] Deployment creates `C:\inetpub\wwwroot\E-ksena\index.html`
 - [ ] Backend (`server.js`) running separately via PM2 on the VM
+- [ ] Backend `.env` exists on the VM and is not committed
+- [ ] IIS reverse proxy forwards `/api` to port 3000
 - [ ] Mobile app planned for Expo EAS or app store deployment (NOT on the VM)
