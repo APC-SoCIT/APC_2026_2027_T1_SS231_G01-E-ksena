@@ -34,6 +34,15 @@ stages:
     # can take 30–50 min on first run; caching below will cut this
     # significantly on subsequent runs.
     timeoutInMinutes: 90
+    # CRITICAL: Use 'workspace: clean: all' instead of letting the
+    # checkout task run 'git clean -ffdx'. The root package.json has
+    # name='e-ksena-workspace', so npm creates a self-referential
+    # symlink: node_modules/e-ksena-workspace -> ../ which causes
+    # git clean to recurse infinitely and hang the entire job.
+    # 'workspace: clean: all' wipes $(Agent.BuildDirectory) outright,
+    # bypassing git's directory traversal entirely.
+    workspace:
+      clean: all
     steps:
 
     # ----------------------------------------------------------
@@ -45,6 +54,10 @@ stages:
     - checkout: self
       fetchDepth: 1
       lfs: false
+      # clean: false because workspace: clean: all above already
+      # wiped the directory — running git clean again is redundant
+      # and risks the infinite symlink loop.
+      clean: false
       displayName: 'Checkout repository (shallow)'
 
     # ----------------------------------------------------------
