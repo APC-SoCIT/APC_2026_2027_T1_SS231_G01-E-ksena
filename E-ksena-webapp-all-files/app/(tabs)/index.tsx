@@ -24,6 +24,7 @@ import {
   ROUTE_BLUE,
 } from '@/constants/theme';
 import { MAKATI_CENTER, isWithinMakati, haversineKm } from '@/lib/makati';
+import { GOOGLE_MAPS_API_KEY } from '@/lib/env';
 import {
   getEmergencyTypesForRole,
   emergencyTypeLabel,
@@ -79,7 +80,7 @@ export default function MapScreen() {
 
   const { isLoaded, loadError } = useJsApiLoader({
     id: 'google-map-script',
-    googleMapsApiKey: 'AIzaSyBGmlFmGPmmxmkkU-9NU-h_Tb_QDjg4aMo',
+    googleMapsApiKey: GOOGLE_MAPS_API_KEY,
   });
 
   const visibleReports = useMemo(() => reports.filter((r) => !dismissedIds.has(r.id)), [reports, dismissedIds]);

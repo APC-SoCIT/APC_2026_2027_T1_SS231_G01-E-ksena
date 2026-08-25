@@ -24,6 +24,7 @@ import {
 import { EMERGENCY_TYPES, matchResponderRole, emergencyTypeLabel } from '@/lib/emergency';
 import { getRoleTheme } from '@/constants/theme';
 import { MAKATI_CENTER, isWithinMakati } from '@/lib/makati';
+import { GOOGLE_MAPS_API_KEY } from '@/lib/env';
 
 const MAP_CONTAINER_STYLE = { width: '100%', height: 280 };
 
@@ -39,7 +40,7 @@ export default function ExploreScreen() {
 
   const { isLoaded, loadError } = useJsApiLoader({
     id: 'google-map-script',
-    googleMapsApiKey: 'AIzaSyBGmlFmGPmmxmkkU-9NU-h_Tb_QDjg4aMo',
+    googleMapsApiKey: GOOGLE_MAPS_API_KEY,
   });
 
   const pinInMakati = pin ? isWithinMakati(pin.lat, pin.lng) : true;
