@@ -42,6 +42,10 @@ stages:
 
     - script: npm --prefix $(FRONTEND_DIR) run build:web
       displayName: 'Build Expo web frontend (expo export --platform web)'
+      env:
+        EXPO_PUBLIC_SUPABASE_URL: $(EXPO_PUBLIC_SUPABASE_URL)
+        EXPO_PUBLIC_SUPABASE_ANON_KEY: $(EXPO_PUBLIC_SUPABASE_ANON_KEY)
+        EXPO_PUBLIC_GOOGLE_MAPS_API_KEY: $(EXPO_PUBLIC_GOOGLE_MAPS_API_KEY)
 
     - task: ArchiveFiles@2
       inputs:
