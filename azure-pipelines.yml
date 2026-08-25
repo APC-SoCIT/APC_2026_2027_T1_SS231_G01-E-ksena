@@ -69,36 +69,43 @@ stages:
       displayName: 'Install Node.js $(NODE_VERSION)'
 
     # ----------------------------------------------------------
-    # 3. Install dependencies
-    #    'npm --prefix <dir> ci' does NOT reliably use the
-    #    package-lock.json inside <dir> — it depends on the cwd.
-    #    Using 'cd <dir> && npm ci' is the correct approach for
-    #    a manual multi-project monorepo (no npm workspaces here).
+    # 3a. Install root dependencies
+    # ----------------------------------------------------------
+    - script: npm install
+      workingDirectory: '$(System.DefaultWorkingDirectory)'
+      displayName: 'Install root dependencies'
+
+    # ----------------------------------------------------------
+    # 3b. Install backend dependencies
+    # ----------------------------------------------------------
+    - script: npm install
+      workingDirectory: '$(System.DefaultWorkingDirectory)\$(BACKEND_DIR)'
+      displayName: 'Install backend dependencies'
+
+    # ----------------------------------------------------------
+    # 3c. Install frontend dependencies + verify expo binary
+    #     Each script step is a fresh cmd.exe invocation with its
+    #     own workingDirectory — 100% reliable on Windows.
     # ----------------------------------------------------------
     - script: |
-        echo === Installing root dependencies ===
-        npm ci
-        echo.
-        echo === Installing backend dependencies ===
-        cd $(BACKEND_DIR) && npm ci
-        echo.
-        echo === Installing frontend dependencies ===
-        cd ..\$(FRONTEND_DIR) && npm ci
+        echo Installing frontend dependencies...
+        npm install
         echo.
         echo === Verifying expo binary was installed ===
-        if not exist "$(FRONTEND_DIR)\node_modules\.bin\expo.cmd" (
-          echo ERROR: expo.cmd was NOT installed into $(FRONTEND_DIR)\node_modules\.bin
-          echo Listing $(FRONTEND_DIR)\node_modules\.bin (first 20 entries):
-          dir $(FRONTEND_DIR)\node_modules\.bin\ /b | findstr /i "expo" || echo not found
+        if not exist "node_modules\.bin\expo.cmd" (
+          echo ERROR: expo.cmd was NOT installed
+          echo Contents of node_modules\.bin:
+          dir node_modules\.bin\ /b 2>nul | findstr /i expo || echo no expo files found
           exit /b 1
         )
-        echo OK: expo.cmd found at $(FRONTEND_DIR)\node_modules\.bin\expo.cmd
-      displayName: 'Install all dependencies (root + backend + frontend)'
+        echo OK: expo.cmd found
+      workingDirectory: '$(System.DefaultWorkingDirectory)\$(FRONTEND_DIR)'
+      displayName: 'Install frontend dependencies + verify expo'
 
     # ----------------------------------------------------------
     # 4. Build Expo web frontend
-    #    Call the local .cmd shim directly (no npx — npx looks in
-    #    the cwd's node_modules, not the workingDirectory's).
+    #    Direct .cmd shim call — workingDirectory guarantees we
+    #    are in the frontend project root where expo is installed.
     # ----------------------------------------------------------
     - script: node_modules\.bin\expo.cmd export --platform web
       workingDirectory: '$(System.DefaultWorkingDirectory)\$(FRONTEND_DIR)'
