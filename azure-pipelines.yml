@@ -89,11 +89,23 @@ stages:
 
     # ----------------------------------------------------------
     # 4. Build Expo web frontend
-    #    Uses 'npx expo' instead of 'npm run build:web':
-    #    npx resolves node_modules/.bin directly without relying
-    #    on cmd.exe PATH augmentation (which was broken).
+    #    Call the local .cmd shim directly.
+    #    'npx expo' in npm v9+ falls back to downloading from
+    #    the registry when it can't find the package in the
+    #    project root's node_modules — it ignores the frontend
+    #    subdirectory's node_modules entirely.
+    #    Calling .\node_modules\.bin\expo.cmd directly finds the
+    #    binary that was installed by `npm --prefix <frontend> ci`.
     # ----------------------------------------------------------
-    - script: npx expo export --platform web
+    - script: |
+        echo Verifying expo binary exists...
+        if not exist "node_modules\.bin\expo.cmd" (
+          echo ERROR: expo.cmd not found in node_modules\.bin
+          dir node_modules\.bin\expo* 2>nul || echo No expo files found
+          exit /b 1
+        )
+        echo expo.cmd found, running export...
+        node_modules\.bin\expo.cmd export --platform web
       workingDirectory: '$(System.DefaultWorkingDirectory)\$(FRONTEND_DIR)'
       displayName: 'Build Expo web frontend (expo export --platform web)'
 
