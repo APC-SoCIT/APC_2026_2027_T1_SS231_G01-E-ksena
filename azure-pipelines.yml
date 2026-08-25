@@ -116,7 +116,12 @@ stages:
     # ----------------------------------------------------------
     # 7. Build Expo web frontend
     # ----------------------------------------------------------
-    - script: npm --prefix $(FRONTEND_DIR) run build:web
+    # On Windows cmd.exe, 'npm --prefix <dir> run <script>' does NOT
+    # reliably add <dir>/node_modules/.bin to PATH, so 'expo' is not
+    # found. Using workingDirectory + plain 'npm run build:web' makes
+    # npm resolve ./node_modules/.bin from the correct cwd instead.
+    - script: npm run build:web
+      workingDirectory: '$(System.DefaultWorkingDirectory)\$(FRONTEND_DIR)'
       displayName: 'Build Expo web frontend (expo export --platform web)'
 
     # ----------------------------------------------------------
