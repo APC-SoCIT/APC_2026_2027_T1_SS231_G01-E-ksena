@@ -30,19 +30,85 @@ stages:
   jobs:
   - job: BuildJob
     displayName: 'Install, Build and Archive'
+    # Raised from 60 → 90 min. The Expo install+build on a cold VM
+    # can take 30–50 min on first run; caching below will cut this
+    # significantly on subsequent runs.
+    timeoutInMinutes: 90
     steps:
 
+    # ----------------------------------------------------------
+    # 1. Checkout — shallow clone (depth 1) to speed up fetch.
+    #    The system decorator tried fetchDepth:1 but wasn't
+    #    applied because the job didn't declare checkout explicitly.
+    #    Declaring it here makes it take effect reliably.
+    # ----------------------------------------------------------
+    - checkout: self
+      fetchDepth: 1
+      lfs: false
+      displayName: 'Checkout repository (shallow)'
+
+    # ----------------------------------------------------------
+    # 2. Install Node.js
+    # ----------------------------------------------------------
     - task: NodeTool@0
       inputs:
         versionSpec: '$(NODE_VERSION)'
       displayName: 'Install Node.js $(NODE_VERSION)'
 
-    - script: npm run install:all
+    # ----------------------------------------------------------
+    # 3-5. Cache node_modules for root, frontend, and backend.
+    #      Key = OS + the relevant package-lock.json hash.
+    #      If the lock file hasn't changed, npm ci is skipped
+    #      by --prefer-offline in step 6.
+    # ----------------------------------------------------------
+    - task: Cache@2
+      inputs:
+        key: 'npm-root | "$(Agent.OS)" | package-lock.json'
+        restoreKeys: |
+          npm-root | "$(Agent.OS)"
+        path: node_modules
+      displayName: 'Cache root node_modules'
+
+    - task: Cache@2
+      inputs:
+        key: 'npm-frontend | "$(Agent.OS)" | $(FRONTEND_DIR)/package-lock.json'
+        restoreKeys: |
+          npm-frontend | "$(Agent.OS)"
+        path: $(FRONTEND_DIR)/node_modules
+      displayName: 'Cache frontend node_modules'
+
+    - task: Cache@2
+      inputs:
+        key: 'npm-backend | "$(Agent.OS)" | $(BACKEND_DIR)/package-lock.json'
+        restoreKeys: |
+          npm-backend | "$(Agent.OS)"
+        path: $(BACKEND_DIR)/node_modules
+      displayName: 'Cache backend node_modules'
+
+    # ----------------------------------------------------------
+    # 6. Install dependencies
+    #    npm ci is faster than npm install (no package resolution,
+    #    uses lock file directly). --prefer-offline uses the
+    #    restored cache above before hitting the network.
+    # ----------------------------------------------------------
+    - script: |
+        echo === Installing root dependencies ===
+        npm ci --prefer-offline
+        echo === Installing backend dependencies ===
+        npm --prefix $(BACKEND_DIR) ci --prefer-offline
+        echo === Installing frontend dependencies ===
+        npm --prefix $(FRONTEND_DIR) ci --prefer-offline
       displayName: 'Install all dependencies (root + backend + frontend)'
 
+    # ----------------------------------------------------------
+    # 7. Build Expo web frontend
+    # ----------------------------------------------------------
     - script: npm --prefix $(FRONTEND_DIR) run build:web
       displayName: 'Build Expo web frontend (expo export --platform web)'
 
+    # ----------------------------------------------------------
+    # 8. Archive only the dist/ output for IIS
+    # ----------------------------------------------------------
     - task: ArchiveFiles@2
       inputs:
         rootFolderOrFile: '$(System.DefaultWorkingDirectory)\$(FRONTEND_DIR)\dist'
@@ -50,8 +116,11 @@ stages:
         archiveType: 'zip'
         archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip'
         replaceExistingArchive: true
-      displayName: 'Archive build output'
+      displayName: 'Archive build output (dist/ only)'
 
+    # ----------------------------------------------------------
+    # 9. Publish artifact
+    # ----------------------------------------------------------
     - task: PublishBuildArtifacts@1
       inputs:
         PathtoPublish: '$(Build.ArtifactStagingDirectory)'
