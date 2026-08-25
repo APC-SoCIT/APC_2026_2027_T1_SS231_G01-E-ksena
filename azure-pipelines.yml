@@ -167,23 +167,55 @@ stages:
                 $zipPath    = "$(System.ArtifactsDirectory)\$(ARTIFACT_NAME)\$(Build.BuildId).zip"
                 $deployPath = "$(IIS_SITE_PATH)"
 
-                Write-Host "--- Stopping IIS ---"
-                iisreset /stop
+                # -------------------------------------------------------
+                # Stop IIS via Stop-Service (works without elevated UAC
+                # token, unlike iisreset which requires full elevation).
+                # -------------------------------------------------------
+                Write-Host "--- Stopping IIS (W3SVC) ---"
+                $svc = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
+                if ($svc -and $svc.Status -eq 'Running') {
+                    Stop-Service -Name W3SVC -Force
+                    Write-Host "W3SVC stopped."
+                } else {
+                    Write-Host "W3SVC was not running, skipping stop."
+                }
 
+                # -------------------------------------------------------
+                # Ensure deploy directory exists and grant write access
+                # to the current user (agent service account).
+                # -------------------------------------------------------
                 Write-Host "--- Ensuring deployment directory exists ---"
                 if (-not (Test-Path $deployPath)) {
                     New-Item -ItemType Directory -Path $deployPath -Force
                     Write-Host "Created directory: $deployPath"
                 }
 
+                Write-Host "--- Granting agent account full control of $deployPath ---"
+                $acl  = Get-Acl $deployPath
+                $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                    [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
+                    "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"
+                )
+                $acl.SetAccessRule($rule)
+                Set-Acl $deployPath $acl
+                Write-Host "ACL updated."
+
+                # -------------------------------------------------------
+                # Clean old files and extract new build.
+                # -------------------------------------------------------
                 Write-Host "--- Cleaning old deployment files ---"
                 Remove-Item "$deployPath\*" -Recurse -Force -ErrorAction SilentlyContinue
 
                 Write-Host "--- Extracting new build from $zipPath to $deployPath ---"
                 Expand-Archive -Path $zipPath -DestinationPath $deployPath -Force
+                Write-Host "Extraction complete."
 
-                Write-Host "--- Starting IIS ---"
-                iisreset /start
+                # -------------------------------------------------------
+                # Restart IIS.
+                # -------------------------------------------------------
+                Write-Host "--- Starting IIS (W3SVC) ---"
+                Start-Service -Name W3SVC
+                Write-Host "W3SVC started."
 
                 Write-Host "--- Deployment complete. Files at: $deployPath ---"
 
@@ -199,3 +231,4 @@ stages:
                     exit 1
                 }
                 Write-Host "IIS is running. Deployment verified successfully."
+
