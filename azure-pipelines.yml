@@ -69,58 +69,31 @@ stages:
       displayName: 'Install Node.js $(NODE_VERSION)'
 
     # ----------------------------------------------------------
-    # 3-5. Cache node_modules for root, frontend, and backend.
-    #      Key = OS + the relevant package-lock.json hash.
-    #      If the lock file hasn't changed, npm ci is skipped
-    #      by --prefer-offline in step 6.
-    # ----------------------------------------------------------
-    - task: Cache@2
-      inputs:
-        key: 'npm-root | "$(Agent.OS)" | package-lock.json'
-        restoreKeys: |
-          npm-root | "$(Agent.OS)"
-        path: node_modules
-      displayName: 'Cache root node_modules'
-
-    - task: Cache@2
-      inputs:
-        key: 'npm-frontend | "$(Agent.OS)" | $(FRONTEND_DIR)/package-lock.json'
-        restoreKeys: |
-          npm-frontend | "$(Agent.OS)"
-        path: $(FRONTEND_DIR)/node_modules
-      displayName: 'Cache frontend node_modules'
-
-    - task: Cache@2
-      inputs:
-        key: 'npm-backend | "$(Agent.OS)" | $(BACKEND_DIR)/package-lock.json'
-        restoreKeys: |
-          npm-backend | "$(Agent.OS)"
-        path: $(BACKEND_DIR)/node_modules
-      displayName: 'Cache backend node_modules'
-
-    # ----------------------------------------------------------
-    # 6. Install dependencies
-    #    npm ci is faster than npm install (no package resolution,
-    #    uses lock file directly). --prefer-offline uses the
-    #    restored cache above before hitting the network.
+    # 3. Install dependencies
+    #    npm ci for reproducible installs.
+    #    No --prefer-offline: the OS-level npm cache
+    #    (%APPDATA%\npm-cache) persists between runs naturally.
+    #    The three Cache@2 tasks were removed because npm ci
+    #    DELETES node_modules before reinstalling — caching
+    #    node_modules and then having npm ci delete it on the
+    #    next step is pointless and was causing partial installs.
     # ----------------------------------------------------------
     - script: |
         echo === Installing root dependencies ===
-        npm ci --prefer-offline
+        npm ci
         echo === Installing backend dependencies ===
-        npm --prefix $(BACKEND_DIR) ci --prefer-offline
+        npm --prefix $(BACKEND_DIR) ci
         echo === Installing frontend dependencies ===
-        npm --prefix $(FRONTEND_DIR) ci --prefer-offline
+        npm --prefix $(FRONTEND_DIR) ci
       displayName: 'Install all dependencies (root + backend + frontend)'
 
     # ----------------------------------------------------------
-    # 7. Build Expo web frontend
+    # 4. Build Expo web frontend
+    #    Uses 'npx expo' instead of 'npm run build:web':
+    #    npx resolves node_modules/.bin directly without relying
+    #    on cmd.exe PATH augmentation (which was broken).
     # ----------------------------------------------------------
-    # On Windows cmd.exe, 'npm --prefix <dir> run <script>' does NOT
-    # reliably add <dir>/node_modules/.bin to PATH, so 'expo' is not
-    # found. Using workingDirectory + plain 'npm run build:web' makes
-    # npm resolve ./node_modules/.bin from the correct cwd instead.
-    - script: npm run build:web
+    - script: npx expo export --platform web
       workingDirectory: '$(System.DefaultWorkingDirectory)\$(FRONTEND_DIR)'
       displayName: 'Build Expo web frontend (expo export --platform web)'
 
