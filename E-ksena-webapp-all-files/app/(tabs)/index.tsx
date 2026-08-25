@@ -78,7 +78,7 @@ export default function MapScreen() {
 
   const { isLoaded, loadError } = useJsApiLoader({
     id: 'google-map-script',
-    googleMapsApiKey: 'AIzaSyCzcIhAoj9O07jszQt4knTyvb9fcUTAfiI',
+    googleMapsApiKey: 'AIzaSyBGmlFmGPmmxmkkU-9NU-h_Tb_QDjg4aMo',
   });
 
   const visibleReports = useMemo(() => reports.filter((r) => !dismissedIds.has(r.id)), [reports, dismissedIds]);

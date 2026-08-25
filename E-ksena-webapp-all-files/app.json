@@ -29,7 +29,7 @@
       "output": "static",
       "favicon": "./assets/images/favicon.png",
       "config": {
-        "googleMapsApiKey": "AIzaSyCzcIhAoj9O07jszQt4knTyvb9fcUTAfiI"
+        "googleMapsApiKey": "AIzaSyBGmlFmGPmmxmkkU-9NU-h_Tb_QDjg4aMo"
       }
     },
     "plugins": [
