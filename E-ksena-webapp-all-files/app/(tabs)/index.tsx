@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { View, Text, ActivityIndicator, StyleSheet, Pressable, ScrollView, Alert } from 'react-native';
-import { GoogleMap, useJsApiLoader, Marker, DirectionsService, DirectionsRenderer, OverlayView } from '@react-google-maps/api';
+import { GoogleMap, useJsApiLoader, Marker, DirectionsService, DirectionsRenderer } from '@react-google-maps/api';
 import { useFocusEffect } from '@react-navigation/native';
 import * as Location from 'expo-location';
 import { supabase } from '@/lib/supabase';
@@ -21,8 +21,10 @@ import {
   DANGER_BORDER,
   SUCCESS,
   SUCCESS_BG,
+  ROUTE_BLUE,
 } from '@/constants/theme';
 import { MAKATI_CENTER, isWithinMakati, haversineKm } from '@/lib/makati';
+import { GOOGLE_MAPS_API_KEY } from '@/lib/env';
 import {
   getEmergencyTypesForRole,
   emergencyTypeLabel,
@@ -78,7 +80,7 @@ export default function MapScreen() {
 
   const { isLoaded, loadError } = useJsApiLoader({
     id: 'google-map-script',
-    googleMapsApiKey: 'AIzaSyCzcIhAoj9O07jszQt4knTyvb9fcUTAfiI',
+    googleMapsApiKey: GOOGLE_MAPS_API_KEY,
   });
 
   const visibleReports = useMemo(() => reports.filter((r) => !dismissedIds.has(r.id)), [reports, dismissedIds]);
@@ -226,13 +228,6 @@ export default function MapScreen() {
     return haversineKm(responderLocation.lat, responderLocation.lng, selectedReport.lat, selectedReport.lng);
   }, [selectedReport, responderLocation]);
 
-  const routeMidpoint = useMemo(() => {
-    const path = directionsResult?.routes?.[0]?.overview_path;
-    if (!path || path.length === 0) return null;
-    const mid = path[Math.floor(path.length / 2)];
-    return { lat: mid.lat(), lng: mid.lng() };
-  }, [directionsResult]);
-
   const handleStatusAction = async (report: EmergencyReport) => {
     const action = nextStatusAction(report.status);
     if (!action) return;
@@ -308,27 +303,12 @@ export default function MapScreen() {
                 directions: directionsResult,
                 suppressMarkers: true,
                 polylineOptions: {
-                  strokeColor: theme.primary,
+                  strokeColor: ROUTE_BLUE,
                   strokeWeight: 6,
                   strokeOpacity: 0.9,
                 },
               }}
             />
-          ) : null}
-          {directionsResult && routeMidpoint && route ? (
-            <OverlayView
-              position={routeMidpoint}
-              mapPaneName={OverlayView.OVERLAY_LAYER}
-              getPixelPositionOffset={(width, height) => ({ x: -(width / 2), y: -(height + 8) })}
-            >
-              <View
-                style={[styles.routeBubble, { borderColor: theme.primary }]}
-                pointerEvents="none"
-              >
-                <Text style={[styles.routeBubbleTime, { color: theme.primary }]}>{route.duration?.text}</Text>
-                <Text style={styles.routeBubbleDistance}>{route.distance?.text}</Text>
-              </View>
-            </OverlayView>
           ) : null}
         </GoogleMap>
       ) : (
@@ -515,22 +495,6 @@ const styles = StyleSheet.create({
     minHeight: 300,
     backgroundColor: WHITE,
     marginBottom: Spacing.md,
-  },
-  routeBubble: {
-    backgroundColor: WHITE,
-    borderWidth: 2,
-    borderRadius: Radius.lg,
-    paddingVertical: Spacing.xs,
-    paddingHorizontal: Spacing.sm,
-    alignItems: 'center',
-  },
-  routeBubbleTime: {
-    fontSize: FontSizes.sm,
-    fontWeight: '700',
-  },
-  routeBubbleDistance: {
-    fontSize: FontSizes.xs,
-    color: TEXT_SECONDARY,
   },
   card: {
     marginTop: Spacing.md,

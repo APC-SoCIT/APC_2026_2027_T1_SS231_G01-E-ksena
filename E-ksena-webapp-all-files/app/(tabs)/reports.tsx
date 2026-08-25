@@ -212,7 +212,7 @@ export default function ReportsScreen() {
     <View style={styles.screen}>
       <View style={[styles.card, CardShadow]}>
         <Text style={styles.sectionTitle}>
-          {editingId ? 'Editing Ticket' : 'New Ticket'}
+          {editingId ? 'Editing Report' : 'New Report'}
         </Text>
         <Text style={styles.label}>Title</Text>
         <TextInput
@@ -239,10 +239,10 @@ export default function ReportsScreen() {
         ) : null}
       </View>
 
-      <Text style={styles.listTitle}>All Tickets</Text>
+      <Text style={styles.listTitle}>All Reports</Text>
       {loadError ? (
         <View style={[styles.card, CardShadow, styles.errorCard]}>
-          <Text style={styles.errorTitle}>Could not load tickets</Text>
+          <Text style={styles.errorTitle}>Could not load reports</Text>
           <Text style={styles.errorText}>{loadError}</Text>
           <Text style={styles.errorHint}>
             Ensure the reports table has a content column: run supabase/reports-add-content.sql in SQL Editor.

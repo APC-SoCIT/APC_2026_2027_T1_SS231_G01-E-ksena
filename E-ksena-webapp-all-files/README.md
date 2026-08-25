@@ -10,11 +10,41 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
    npm install
    ```
 
-2. Start the app
+2. Set up environment variables
+
+   Copy `.env.example` to `.env` and fill in the values:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   | Variable | Where to get it |
+   | --- | --- |
+   | `EXPO_PUBLIC_SUPABASE_URL` | Supabase Dashboard → Project Settings → API |
+   | `EXPO_PUBLIC_SUPABASE_ANON_KEY` | Same page — the **anon / publishable** key, never `service_role` |
+   | `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` | Google Cloud Console → APIs & Services → Credentials |
+
+   The Google Maps key needs **Maps JavaScript API**, **Directions API**, and
+   **Geocoding API** all enabled, and the key itself restricted to those three
+   APIs. Without Directions the road navigation silently fails to draw.
+
+   The app refuses to start if any of these is missing, and tells you which one.
+
+   > **These are not secrets.** The `EXPO_PUBLIC_` prefix means Expo bakes the
+   > values into the browser bundle, where anyone can read them. That is fine for
+   > a Supabase anon key (Row Level Security is what actually protects the data)
+   > and for a restricted Maps key. Never put a Supabase `service_role` key or
+   > any real secret in an `EXPO_PUBLIC_` variable.
+
+3. Start the app
 
    ```bash
    npx expo start
    ```
+
+   If you change a value in `.env`, restart with `npx expo start --web --clear`.
+   Expo inlines these at build time, so a plain restart keeps serving the old
+   values out of Metro's cache.
 
 In the output, you'll find options to open the app in a
 
@@ -60,7 +90,15 @@ After you make changes, run `npm run build:web` again, then refresh the browser.
    npx vercel
    ```
 4. Follow the prompts (link to your Vercel account if asked). Vercel will use the existing `vercel.json` (build command and `dist` output).
-5. You’ll get a live URL like `https://e-ksena-xxx.vercel.app`.
+5. **Add the environment variables.** In the Vercel dashboard go to
+   Project Settings → Environment Variables and add all three variables from
+   `.env.example` (same names, same values). `.env` is gitignored, so Vercel
+   cannot see it — without this step the deployed site fails to start.
+   After adding them, redeploy so the new values get built in.
+6. You’ll get a live URL like `https://e-ksena-xxx.vercel.app`.
+7. Once you have the real domain, go back to Google Cloud Console and add an
+   **HTTP referrer** restriction on the Maps key limiting it to that domain, so
+   the key cannot be reused from anywhere else.
 
 To deploy again after changes: run `npm run build:web`, then `npx vercel --prod` for production.
 

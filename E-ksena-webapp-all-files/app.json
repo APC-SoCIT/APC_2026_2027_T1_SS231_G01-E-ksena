@@ -27,10 +27,7 @@
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png",
-      "config": {
-        "googleMapsApiKey": "AIzaSyCzcIhAoj9O07jszQt4knTyvb9fcUTAfiI"
-      }
+      "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
       "expo-router",

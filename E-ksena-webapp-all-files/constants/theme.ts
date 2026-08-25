@@ -16,6 +16,7 @@ export const SUCCESS_BG = '#E7F3EC';
 export const DANGER = BRAND_RED;
 export const DANGER_BG = '#F7EAE9';
 export const DANGER_BORDER = '#DFB6B3';
+export const ROUTE_BLUE = '#4285F4';
 
 export const Colors = {
   light: {

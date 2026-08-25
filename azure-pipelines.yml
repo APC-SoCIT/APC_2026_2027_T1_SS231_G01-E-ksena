@@ -30,23 +30,94 @@ stages:
   jobs:
   - job: BuildJob
     displayName: 'Install, Build and Archive'
+    # Raised from 60 → 90 min. The Expo install+build on a cold VM
+    # can take 30–50 min on first run; caching below will cut this
+    # significantly on subsequent runs.
+    timeoutInMinutes: 90
+    # CRITICAL: Use 'workspace: clean: all' instead of letting the
+    # checkout task run 'git clean -ffdx'. The root package.json has
+    # name='e-ksena-workspace', so npm creates a self-referential
+    # symlink: node_modules/e-ksena-workspace -> ../ which causes
+    # git clean to recurse infinitely and hang the entire job.
+    # 'workspace: clean: all' wipes $(Agent.BuildDirectory) outright,
+    # bypassing git's directory traversal entirely.
+    workspace:
+      clean: all
     steps:
 
+    # ----------------------------------------------------------
+    # 1. Checkout — shallow clone (depth 1) to speed up fetch.
+    #    The system decorator tried fetchDepth:1 but wasn't
+    #    applied because the job didn't declare checkout explicitly.
+    #    Declaring it here makes it take effect reliably.
+    # ----------------------------------------------------------
+    - checkout: self
+      fetchDepth: 1
+      lfs: false
+      # clean: false because workspace: clean: all above already
+      # wiped the directory — running git clean again is redundant
+      # and risks the infinite symlink loop.
+      clean: false
+      displayName: 'Checkout repository (shallow)'
+
+    # ----------------------------------------------------------
+    # 2. Install Node.js
+    # ----------------------------------------------------------
     - task: NodeTool@0
       inputs:
         versionSpec: '$(NODE_VERSION)'
       displayName: 'Install Node.js $(NODE_VERSION)'
 
-    - script: npm run install:all
-      displayName: 'Install all dependencies (root + backend + frontend)'
+    # ----------------------------------------------------------
+    # 3a. Install root dependencies
+    # ----------------------------------------------------------
+    - script: npm install
+      workingDirectory: '$(System.DefaultWorkingDirectory)'
+      displayName: 'Install root dependencies'
 
-    - script: npm --prefix $(FRONTEND_DIR) run build:web
+    # ----------------------------------------------------------
+    # 3b. Install backend dependencies
+    # ----------------------------------------------------------
+    - script: npm install
+      workingDirectory: '$(System.DefaultWorkingDirectory)\$(BACKEND_DIR)'
+      displayName: 'Install backend dependencies'
+
+    # ----------------------------------------------------------
+    # 3c. Install frontend dependencies + verify expo binary
+    #     Each script step is a fresh cmd.exe invocation with its
+    #     own workingDirectory — 100% reliable on Windows.
+    # ----------------------------------------------------------
+    - script: |
+        echo Installing frontend dependencies...
+        npm install
+        echo.
+        echo === Verifying expo binary was installed ===
+        if not exist "node_modules\.bin\expo.cmd" (
+          echo ERROR: expo.cmd was NOT installed
+          echo Contents of node_modules\.bin:
+          dir node_modules\.bin\ /b 2>nul | findstr /i expo || echo no expo files found
+          exit /b 1
+        )
+        echo OK: expo.cmd found
+      workingDirectory: '$(System.DefaultWorkingDirectory)\$(FRONTEND_DIR)'
+      displayName: 'Install frontend dependencies + verify expo'
+
+    # ----------------------------------------------------------
+    # 4. Build Expo web frontend
+    #    Direct .cmd shim call — workingDirectory guarantees we
+    #    are in the frontend project root where expo is installed.
+    # ----------------------------------------------------------
+    - script: node_modules\.bin\expo.cmd export --platform web
+      workingDirectory: '$(System.DefaultWorkingDirectory)\$(FRONTEND_DIR)'
       displayName: 'Build Expo web frontend (expo export --platform web)'
       env:
         EXPO_PUBLIC_SUPABASE_URL: $(EXPO_PUBLIC_SUPABASE_URL)
         EXPO_PUBLIC_SUPABASE_ANON_KEY: $(EXPO_PUBLIC_SUPABASE_ANON_KEY)
         EXPO_PUBLIC_GOOGLE_MAPS_API_KEY: $(EXPO_PUBLIC_GOOGLE_MAPS_API_KEY)
 
+    # ----------------------------------------------------------
+    # 8. Archive only the dist/ output for IIS
+    # ----------------------------------------------------------
     - task: ArchiveFiles@2
       inputs:
         rootFolderOrFile: '$(System.DefaultWorkingDirectory)\$(FRONTEND_DIR)\dist'
@@ -54,8 +125,11 @@ stages:
         archiveType: 'zip'
         archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip'
         replaceExistingArchive: true
-      displayName: 'Archive build output'
+      displayName: 'Archive build output (dist/ only)'
 
+    # ----------------------------------------------------------
+    # 9. Publish artifact
+    # ----------------------------------------------------------
     - task: PublishBuildArtifacts@1
       inputs:
         PathtoPublish: '$(Build.ArtifactStagingDirectory)'
@@ -97,23 +171,55 @@ stages:
                 $zipPath    = "$(System.ArtifactsDirectory)\$(ARTIFACT_NAME)\$(Build.BuildId).zip"
                 $deployPath = "$(IIS_SITE_PATH)"
 
-                Write-Host "--- Stopping IIS ---"
-                iisreset /stop
+                # -------------------------------------------------------
+                # Stop IIS via Stop-Service (works without elevated UAC
+                # token, unlike iisreset which requires full elevation).
+                # -------------------------------------------------------
+                Write-Host "--- Stopping IIS (W3SVC) ---"
+                $svc = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
+                if ($svc -and $svc.Status -eq 'Running') {
+                    Stop-Service -Name W3SVC -Force
+                    Write-Host "W3SVC stopped."
+                } else {
+                    Write-Host "W3SVC was not running, skipping stop."
+                }
 
+                # -------------------------------------------------------
+                # Ensure deploy directory exists and grant write access
+                # to the current user (agent service account).
+                # -------------------------------------------------------
                 Write-Host "--- Ensuring deployment directory exists ---"
                 if (-not (Test-Path $deployPath)) {
                     New-Item -ItemType Directory -Path $deployPath -Force
                     Write-Host "Created directory: $deployPath"
                 }
 
+                Write-Host "--- Granting agent account full control of $deployPath ---"
+                $acl  = Get-Acl $deployPath
+                $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                    [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
+                    "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"
+                )
+                $acl.SetAccessRule($rule)
+                Set-Acl $deployPath $acl
+                Write-Host "ACL updated."
+
+                # -------------------------------------------------------
+                # Clean old files and extract new build.
+                # -------------------------------------------------------
                 Write-Host "--- Cleaning old deployment files ---"
                 Remove-Item "$deployPath\*" -Recurse -Force -ErrorAction SilentlyContinue
 
                 Write-Host "--- Extracting new build from $zipPath to $deployPath ---"
                 Expand-Archive -Path $zipPath -DestinationPath $deployPath -Force
+                Write-Host "Extraction complete."
 
-                Write-Host "--- Starting IIS ---"
-                iisreset /start
+                # -------------------------------------------------------
+                # Restart IIS.
+                # -------------------------------------------------------
+                Write-Host "--- Starting IIS (W3SVC) ---"
+                Start-Service -Name W3SVC
+                Write-Host "W3SVC started."
 
                 Write-Host "--- Deployment complete. Files at: $deployPath ---"
 
@@ -129,3 +235,4 @@ stages:
                     exit 1
                 }
                 Write-Host "IIS is running. Deployment verified successfully."
+
