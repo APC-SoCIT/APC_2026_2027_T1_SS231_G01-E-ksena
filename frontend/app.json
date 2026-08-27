@@ -1,4 +1,4 @@
-﻿{
+{
   "expo": {
     "name": "E-KSENA",
     "slug": "e-ksena-emergency",
@@ -87,7 +87,7 @@
       ]
     ],
     "extra": {
-      "API_BASE_URL": "http://10.0.2.2:3000/api",
+      "API_BASE_URL": "http://192.168.100.11:3000/api",
       "SUPABASE_URL": "https://cwhduwianpugjbnqzmhs.supabase.co",
       "SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN3aGR1d2lhbnB1Z2pibnF6bWhzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY0NzQ5MTUsImV4cCI6MjA4MjA1MDkxNX0.G8fbpwP6AVi00DNNSEbYC8ZMF4WYX0NIvCP0ZBPDxgg",
       "MAPBOX_TOKEN": "pk.eyJ1IjoicGV0ZXItMTExMSIsImEiOiJjbXBlOGx0bW4wMXl1MnBxejEyaWJ0ZmZhIn0.njE1TKxllt2JYRt2RmqfnA",
