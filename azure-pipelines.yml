@@ -162,7 +162,7 @@ stages:
             displayName: 'Download build artifact'
 
           - task: PowerShell@2
-            displayName: 'Stop IIS, Deploy Files, Restart IIS'
+            displayName: 'Stop IIS Site, Deploy Files, Restart IIS Site'
             inputs:
               targetType: 'inline'
               errorActionPreference: 'Continue'
@@ -170,45 +170,31 @@ stages:
               script: |
                 $zipPath    = "$(System.ArtifactsDirectory)\$(ARTIFACT_NAME)\$(Build.BuildId).zip"
                 $deployPath = "$(IIS_SITE_PATH)"
+                $siteName   = "E-ksena"
+
+                Import-Module WebAdministration -ErrorAction SilentlyContinue
 
                 # -------------------------------------------------------
-                # Stop IIS — try Stop-Service, fall back to net stop.
-                # Wrapped in try/catch: if both fail (permissions not yet
-                # fixed on the agent service account), log a warning and
-                # continue — the deploy dir is a subdirectory so IIS
-                # typically does not lock those files.
+                # Stop the E-ksena IIS site (not the whole W3SVC service).
+                # Stop-WebSite only requires IIS management rights, not
+                # full SCM elevation like Stop-Service W3SVC does.
                 # -------------------------------------------------------
-                Write-Host "--- Stopping IIS (W3SVC) ---"
+                Write-Host "--- Stopping IIS site '$siteName' ---"
                 try {
-                    $svc = Get-Service -Name W3SVC -ErrorAction Stop
-                    if ($svc.Status -eq 'Running') {
-                        Stop-Service -Name W3SVC -Force -ErrorAction Stop
-                        Write-Host "W3SVC stopped via Stop-Service."
-                    } else {
-                        Write-Host "W3SVC was not running."
-                    }
+                    Stop-WebSite -Name $siteName -ErrorAction Stop
+                    Write-Host "Site '$siteName' stopped."
                 } catch {
-                    Write-Warning "Stop-Service failed: $_"
-                    Write-Host "Trying net stop as fallback..."
-                    $result = & net stop W3SVC /y 2>&1
-                    Write-Host $result
-                    Write-Warning "Could not stop W3SVC. Continuing deploy anyway."
-                    Write-Warning "ACTION REQUIRED: Change the agent service Log On to 'Local System' in services.msc"
+                    Write-Warning "Could not stop site: $_  Continuing anyway."
                 }
 
                 # -------------------------------------------------------
-                # Ensure deploy directory exists.
+                # Ensure deploy directory and grant agent FullControl.
                 # -------------------------------------------------------
                 Write-Host "--- Ensuring deployment directory exists ---"
                 if (-not (Test-Path $deployPath)) {
                     New-Item -ItemType Directory -Path $deployPath -Force
                     Write-Host "Created: $deployPath"
                 }
-
-                # -------------------------------------------------------
-                # Grant current agent account FullControl on deploy path.
-                # -------------------------------------------------------
-                Write-Host "--- Granting agent account full control of $deployPath ---"
                 try {
                     $acl  = Get-Acl $deployPath
                     $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
@@ -217,7 +203,7 @@ stages:
                     )
                     $acl.SetAccessRule($rule)
                     Set-Acl $deployPath $acl
-                    Write-Host "ACL updated."
+                    Write-Host "ACL updated for current agent account."
                 } catch {
                     Write-Warning "Could not set ACL: $_"
                 }
@@ -233,31 +219,85 @@ stages:
                 Write-Host "Extraction complete."
 
                 # -------------------------------------------------------
-                # Restart IIS.
+                # Write web.config for SPA routing.
+                # Expo Router uses client-side routing — IIS must redirect
+                # all unmatched paths to index.html instead of 404/403.
                 # -------------------------------------------------------
-                Write-Host "--- Starting IIS (W3SVC) ---"
+                Write-Host "--- Writing web.config for SPA routing ---"
+                $webConfig = @'
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <system.webServer>
+    <defaultDocument>
+      <files>
+        <clear />
+        <add value="index.html" />
+      </files>
+    </defaultDocument>
+    <rewrite>
+      <rules>
+        <rule name="SPA Fallback" stopProcessing="true">
+          <match url=".*" />
+          <conditions logicalGrouping="MatchAll">
+            <add input="{REQUEST_FILENAME}" matchType="IsFile" negate="true" />
+            <add input="{REQUEST_FILENAME}" matchType="IsDirectory" negate="true" />
+          </conditions>
+          <action type="Rewrite" url="/index.html" />
+        </rule>
+      </rules>
+    </rewrite>
+    <staticContent>
+      <mimeMap fileExtension=".webp" mimeType="image/webp" />
+      <mimeMap fileExtension=".woff2" mimeType="font/woff2" />
+    </staticContent>
+  </system.webServer>
+</configuration>
+'@
+                Set-Content -Path "$deployPath\web.config" -Value $webConfig -Encoding UTF8
+                Write-Host "web.config written."
+
+                # -------------------------------------------------------
+                # Ensure IIS URL Rewrite module is available (needed for
+                # the SPA rewrite rule above). Log a warning if missing.
+                # -------------------------------------------------------
+                $rewriteDll = "$env:SystemRoot\System32\inetsrv\rewrite.dll"
+                if (-not (Test-Path $rewriteDll)) {
+                    Write-Warning "IIS URL Rewrite module not found at $rewriteDll"
+                    Write-Warning "Download and install from: https://www.iis.net/downloads/microsoft/url-rewrite"
+                    Write-Warning "Without it the SPA fallback rule will be ignored (404 on deep links)."
+                }
+
+                # -------------------------------------------------------
+                # Start the E-ksena IIS site.
+                # -------------------------------------------------------
+                Write-Host "--- Starting IIS site '$siteName' ---"
                 try {
-                    Start-Service -Name W3SVC -ErrorAction Stop
-                    Write-Host "W3SVC started via Start-Service."
+                    Start-WebSite -Name $siteName -ErrorAction Stop
+                    Write-Host "Site '$siteName' started."
                 } catch {
-                    Write-Warning "Start-Service failed: $_"
-                    $result = & net start W3SVC 2>&1
-                    Write-Host $result
+                    Write-Warning "Could not start site: $_"
+                    Write-Warning "Start the '$siteName' site manually in IIS Manager."
                 }
 
                 Write-Host "--- Deployment complete. Files at: $deployPath ---"
 
 
           - task: PowerShell@2
-            displayName: 'Verify IIS is Running'
+            displayName: 'Verify IIS Site is Running'
             inputs:
               targetType: 'inline'
               script: |
-                $svc = Get-Service -Name W3SVC
-                Write-Host "IIS (W3SVC) status: $($svc.Status)"
-                if ($svc.Status -ne 'Running') {
-                    Write-Error "IIS did not start correctly after deployment!"
+                Import-Module WebAdministration -ErrorAction SilentlyContinue
+                $site = Get-WebSite -Name "E-ksena" -ErrorAction SilentlyContinue
+                if ($null -eq $site) {
+                    Write-Error "IIS site 'E-ksena' not found!"
                     exit 1
                 }
-                Write-Host "IIS is running. Deployment verified successfully."
+                Write-Host "IIS site 'E-ksena' state: $($site.State)"
+                if ($site.State -ne 'Started') {
+                    Write-Warning "Site is not in 'Started' state. Check IIS Manager."
+                } else {
+                    Write-Host "E-ksena site is running. Deployment verified successfully."
+                }
+
 
