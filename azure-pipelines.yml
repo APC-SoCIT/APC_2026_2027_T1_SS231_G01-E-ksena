@@ -219,42 +219,19 @@ stages:
                 Write-Host "Extraction complete."
 
                 # -------------------------------------------------------
-                # Write web.config for SPA routing.
-                # Expo Router uses client-side routing — IIS must redirect
-                # all unmatched paths to index.html instead of 404/403.
+                # Copy web.config for SPA routing (committed in repo at
+                # E-ksena-webapp-all-files/web.config).
+                # Sets index.html as default document and rewrites all
+                # unknown paths to index.html for Expo Router routing.
                 # -------------------------------------------------------
-                Write-Host "--- Writing web.config for SPA routing ---"
-                $webConfig = @'
-<?xml version="1.0" encoding="UTF-8"?>
-<configuration>
-  <system.webServer>
-    <defaultDocument>
-      <files>
-        <clear />
-        <add value="index.html" />
-      </files>
-    </defaultDocument>
-    <rewrite>
-      <rules>
-        <rule name="SPA Fallback" stopProcessing="true">
-          <match url=".*" />
-          <conditions logicalGrouping="MatchAll">
-            <add input="{REQUEST_FILENAME}" matchType="IsFile" negate="true" />
-            <add input="{REQUEST_FILENAME}" matchType="IsDirectory" negate="true" />
-          </conditions>
-          <action type="Rewrite" url="/index.html" />
-        </rule>
-      </rules>
-    </rewrite>
-    <staticContent>
-      <mimeMap fileExtension=".webp" mimeType="image/webp" />
-      <mimeMap fileExtension=".woff2" mimeType="font/woff2" />
-    </staticContent>
-  </system.webServer>
-</configuration>
-'@
-                Set-Content -Path "$deployPath\web.config" -Value $webConfig -Encoding UTF8
-                Write-Host "web.config written."
+                Write-Host "--- Copying web.config for SPA routing ---"
+                $webConfigSrc = "$(System.DefaultWorkingDirectory)\$(FRONTEND_DIR)\web.config"
+                if (Test-Path $webConfigSrc) {
+                    Copy-Item $webConfigSrc "$deployPath\web.config" -Force
+                    Write-Host "web.config copied from repo."
+                } else {
+                    Write-Warning "web.config not found at $webConfigSrc — SPA deep links may 404."
+                }
 
                 # -------------------------------------------------------
                 # Ensure IIS URL Rewrite module is available (needed for
