@@ -25,6 +25,7 @@ import {
 } from '@/constants/theme';
 import { MAKATI_CENTER, isWithinMakati, haversineKm } from '@/lib/makati';
 import { GOOGLE_MAPS_API_KEY } from '@/lib/env';
+import { ResponderVideoPlayer } from '@/components/responder-video-player';
 import {
   getEmergencyTypesForRole,
   emergencyTypeLabel,
@@ -35,6 +36,7 @@ import {
 
 interface EmergencyReport {
   id: string;
+  incidentId: string | null;
   lat: number;
   lng: number;
   classified_as?: string;
@@ -101,7 +103,7 @@ export default function MapScreen() {
       setReports([]);
       return;
     }
-    const selectCols = 'report_id, report_location_lat, report_location_lng, classified_as, status, timestamp';
+    const selectCols = 'report_id, incident_id, report_location_lat, report_location_lng, classified_as, status, timestamp';
     let data: unknown[] | null = null;
     let error: { message: string } | null = null;
 
@@ -116,7 +118,7 @@ export default function MapScreen() {
     if (error && /column.*status.*does not exist/i.test(error.message)) {
       const fallback = await supabase
         .from('reports')
-        .select('report_id, report_location_lat, report_location_lng, classified_as, timestamp')
+        .select('report_id, incident_id, report_location_lat, report_location_lng, classified_as, timestamp')
         .in('classified_as', allowedTypes);
       data = fallback.data;
       error = fallback.error;
@@ -136,6 +138,7 @@ export default function MapScreen() {
 
       locations.push({
         id: String(row.report_id ?? ''),
+        incidentId: row.incident_id ? String(row.incident_id) : null,
         lat: Number(lat),
         lng: Number(lng),
         classified_as: row.classified_as as string | undefined,
@@ -340,6 +343,8 @@ export default function MapScreen() {
             <Text style={styles.hintText}>Your current location is outside Makati City, so routing is unavailable.</Text>
           ) : null}
 
+          <ResponderVideoPlayer incidentId={selectedReport.incidentId} />
+
           <View style={styles.statsRow}>
             <View style={styles.statBlock}>
               <Text style={styles.statLabel}>DISTANCE</Text>
@@ -381,6 +386,7 @@ export default function MapScreen() {
           {selectedReport.status === 'responding' ? (
             <Text style={styles.hintText}>Tracking your live location as you head to the scene.</Text>
           ) : null}
+          <ResponderVideoPlayer incidentId={selectedReport.incidentId} />
           {route ? (
             <Text style={styles.selectedDetail}>
               Route: {route.distance?.text} · ETA {route.duration?.text}
