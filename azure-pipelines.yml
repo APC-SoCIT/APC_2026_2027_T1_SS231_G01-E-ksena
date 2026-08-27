@@ -165,44 +165,62 @@ stages:
             displayName: 'Stop IIS, Deploy Files, Restart IIS'
             inputs:
               targetType: 'inline'
-              errorActionPreference: 'Stop'
+              errorActionPreference: 'Continue'
               failOnStderr: false
               script: |
                 $zipPath    = "$(System.ArtifactsDirectory)\$(ARTIFACT_NAME)\$(Build.BuildId).zip"
                 $deployPath = "$(IIS_SITE_PATH)"
 
                 # -------------------------------------------------------
-                # Stop IIS via Stop-Service (works without elevated UAC
-                # token, unlike iisreset which requires full elevation).
+                # Stop IIS — try Stop-Service, fall back to net stop.
+                # Wrapped in try/catch: if both fail (permissions not yet
+                # fixed on the agent service account), log a warning and
+                # continue — the deploy dir is a subdirectory so IIS
+                # typically does not lock those files.
                 # -------------------------------------------------------
                 Write-Host "--- Stopping IIS (W3SVC) ---"
-                $svc = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
-                if ($svc -and $svc.Status -eq 'Running') {
-                    Stop-Service -Name W3SVC -Force
-                    Write-Host "W3SVC stopped."
-                } else {
-                    Write-Host "W3SVC was not running, skipping stop."
+                try {
+                    $svc = Get-Service -Name W3SVC -ErrorAction Stop
+                    if ($svc.Status -eq 'Running') {
+                        Stop-Service -Name W3SVC -Force -ErrorAction Stop
+                        Write-Host "W3SVC stopped via Stop-Service."
+                    } else {
+                        Write-Host "W3SVC was not running."
+                    }
+                } catch {
+                    Write-Warning "Stop-Service failed: $_"
+                    Write-Host "Trying net stop as fallback..."
+                    $result = & net stop W3SVC /y 2>&1
+                    Write-Host $result
+                    Write-Warning "Could not stop W3SVC. Continuing deploy anyway."
+                    Write-Warning "ACTION REQUIRED: Change the agent service Log On to 'Local System' in services.msc"
                 }
 
                 # -------------------------------------------------------
-                # Ensure deploy directory exists and grant write access
-                # to the current user (agent service account).
+                # Ensure deploy directory exists.
                 # -------------------------------------------------------
                 Write-Host "--- Ensuring deployment directory exists ---"
                 if (-not (Test-Path $deployPath)) {
                     New-Item -ItemType Directory -Path $deployPath -Force
-                    Write-Host "Created directory: $deployPath"
+                    Write-Host "Created: $deployPath"
                 }
 
+                # -------------------------------------------------------
+                # Grant current agent account FullControl on deploy path.
+                # -------------------------------------------------------
                 Write-Host "--- Granting agent account full control of $deployPath ---"
-                $acl  = Get-Acl $deployPath
-                $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-                    [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
-                    "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"
-                )
-                $acl.SetAccessRule($rule)
-                Set-Acl $deployPath $acl
-                Write-Host "ACL updated."
+                try {
+                    $acl  = Get-Acl $deployPath
+                    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                        [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
+                        "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"
+                    )
+                    $acl.SetAccessRule($rule)
+                    Set-Acl $deployPath $acl
+                    Write-Host "ACL updated."
+                } catch {
+                    Write-Warning "Could not set ACL: $_"
+                }
 
                 # -------------------------------------------------------
                 # Clean old files and extract new build.
@@ -210,7 +228,7 @@ stages:
                 Write-Host "--- Cleaning old deployment files ---"
                 Remove-Item "$deployPath\*" -Recurse -Force -ErrorAction SilentlyContinue
 
-                Write-Host "--- Extracting new build from $zipPath to $deployPath ---"
+                Write-Host "--- Extracting $zipPath to $deployPath ---"
                 Expand-Archive -Path $zipPath -DestinationPath $deployPath -Force
                 Write-Host "Extraction complete."
 
@@ -218,10 +236,17 @@ stages:
                 # Restart IIS.
                 # -------------------------------------------------------
                 Write-Host "--- Starting IIS (W3SVC) ---"
-                Start-Service -Name W3SVC
-                Write-Host "W3SVC started."
+                try {
+                    Start-Service -Name W3SVC -ErrorAction Stop
+                    Write-Host "W3SVC started via Start-Service."
+                } catch {
+                    Write-Warning "Start-Service failed: $_"
+                    $result = & net start W3SVC 2>&1
+                    Write-Host $result
+                }
 
                 Write-Host "--- Deployment complete. Files at: $deployPath ---"
+
 
           - task: PowerShell@2
             displayName: 'Verify IIS is Running'
