@@ -81,8 +81,8 @@ const getOrCreateReporterUser = async (phoneNumber) => {
 // Health Check Endpoint
 // ============================================
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
+  res.json({
+    status: 'ok',
     timestamp: new Date().toISOString(),
     service: 'E-KSENA Backend API'
   });
@@ -152,9 +152,9 @@ app.post('/api/report-incident', async (req, res) => {
       }
 
       // Find responders for the detected service type
-        const { data: responders, error: responderError } = await supabase
-          .from('responders')
-          .select('responder_id, responder_phone_number, name, service_type, is_active')
+      const { data: responders, error: responderError } = await supabase
+        .from('responders')
+        .select('responder_id, responder_phone_number, name, service_type, is_active')
         .eq('service_type', detectedService)
         .eq('is_active', true);
 
@@ -189,6 +189,35 @@ app.post('/api/report-incident', async (req, res) => {
             `[SUCCESS] Responder ${assignedResponder.responder_phone_number} dispatched for incident ${incident.incident_id}`
           );
         }
+
+        // --- NEW: Sync to legacy 'reports' table for the Web App ---
+        try {
+          const { error: reportError } = await supabase
+            .from('reports')
+            .insert({
+              user_id: reporterUserId,
+              incident_id: incident.incident_id,
+              content: location_address || 'Emergency Report',
+              classified_as: detectedService,
+              report_location_lat: lat,
+              report_location_lng: lng,
+              video_path: video_url || 'mock://video',
+              bucket_id: 'incident-videos',
+              is_processed: true,
+              status: 'pending',
+              responder_username: assignedResponder.name || assignedResponder.responder_phone_number
+            });
+
+          if (reportError) {
+            console.error('[ERROR] Failed to sync to reports table:', reportError);
+          } else {
+            console.log(`[SUCCESS] Synced incident ${incident.incident_id} to legacy reports table`);
+          }
+        } catch (err) {
+          console.error('[ERROR] Exception syncing to reports table:', err);
+        }
+        // -----------------------------------------------------------
+
       }
     } catch (error) {
       console.error('[ERROR] Error in AI analysis/assignment:', error);
@@ -258,7 +287,7 @@ app.get('/api/incident/:incidentId', async (req, res) => {
 
       if (!responderError && responder) {
         console.log(`[DEBUG] Responder data retrieved:`, responder);
-        
+
         responderPhoneNumber = responder.responder_phone_number;
 
         // Set dispatcher info
