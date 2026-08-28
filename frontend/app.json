@@ -26,7 +26,6 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "googleServicesFile": null,
       "config": {
         "googleMaps": {
           "apiKey": "AIzaSyBGmlFmGPmmxmkkU-9NU-h_Tb_QDjg4aMo"
@@ -84,10 +83,16 @@
           "cameraPermission": "Allow this app to access the camera for live emergency video.",
           "microphonePermission": "Allow this app to access the microphone for live emergency audio."
         }
+      ],
+      [
+        "@rnmapbox/maps",
+        {
+          "RNMapboxMapsDownloadToken": "sk.eyJ1IjoicGV0ZXItMTExMSIsImEiOiJjbXNydnBlaTAwMW16MnpzY2s2Y2FsNGtlIn0.Lx_sg_vcr9_PfoHMiiN18g"
+        }
       ]
     ],
     "extra": {
-      "API_BASE_URL": "http://192.168.100.11:3000/api",
+      "API_BASE_URL": "http://192.168.16.28:3000/api",
       "SUPABASE_URL": "https://cwhduwianpugjbnqzmhs.supabase.co",
       "SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN3aGR1d2lhbnB1Z2pibnF6bWhzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY0NzQ5MTUsImV4cCI6MjA4MjA1MDkxNX0.G8fbpwP6AVi00DNNSEbYC8ZMF4WYX0NIvCP0ZBPDxgg",
       "MAPBOX_TOKEN": "pk.eyJ1IjoicGV0ZXItMTExMSIsImEiOiJjbXBlOGx0bW4wMXl1MnBxejEyaWJ0ZmZhIn0.njE1TKxllt2JYRt2RmqfnA",
