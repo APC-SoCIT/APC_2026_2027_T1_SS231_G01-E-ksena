@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Platform } from 'react-native';
+import { View, Text, StyleSheet, Platform, Pressable } from 'react-native';
 import { supabase } from '@/lib/supabase';
 import {
   Spacing,
@@ -37,6 +37,7 @@ export function ResponderVideoPlayer({ incidentId }: { incidentId?: string | nul
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [state, setState] = useState<ConnectionState>('idle');
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
+  const [needsTap, setNeedsTap] = useState(false);
 
   useEffect(() => {
     if (Platform.OS !== 'web') return;
@@ -72,6 +73,10 @@ export function ResponderVideoPlayer({ incidentId }: { incidentId?: string | nul
       if (videoRef.current && stream) {
         videoRef.current.srcObject = stream;
         setState('live');
+        videoRef.current.play().then(
+          () => setNeedsTap(false),
+          () => setNeedsTap(true)
+        );
       }
     };
 
@@ -183,6 +188,22 @@ export function ResponderVideoPlayer({ incidentId }: { incidentId?: string | nul
           playsInline
           style={{ width: '100%', height: '100%', objectFit: 'cover', backgroundColor: '#000', display: 'block' }}
         />
+        {needsTap ? (
+          <Pressable
+            style={styles.tapOverlay}
+            onPress={() => {
+              videoRef.current?.play().then(
+                () => setNeedsTap(false),
+                () => setNeedsTap(true)
+              );
+            }}
+          >
+            <Text style={styles.tapOverlayText}>Tap to play the live stream</Text>
+            <Text style={styles.tapOverlayHint}>
+              The browser blocked automatic playback because the stream has audio.
+            </Text>
+          </Pressable>
+        ) : null}
       </View>
 
       {errorDetail ? <Text style={styles.errorText}>{errorDetail}</Text> : null}
@@ -228,6 +249,29 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 260,
     backgroundColor: '#000',
+    position: 'relative',
+  },
+  tapOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: Spacing.md,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  tapOverlayText: {
+    fontSize: FontSizes.body,
+    fontWeight: '700',
+    color: WHITE,
+    marginBottom: Spacing.xs,
+  },
+  tapOverlayHint: {
+    fontSize: FontSizes.xs,
+    color: '#D7DCE2',
+    textAlign: 'center',
   },
   unavailableText: {
     fontSize: FontSizes.sm,

@@ -71,6 +71,7 @@ export default function MapScreen() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
   const [responderLocation, setResponderLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [locationError, setLocationError] = useState<string | null>(null);
   const [addressCache, setAddressCache] = useState<Record<string, string>>({});
   const [directionsResult, setDirectionsResult] = useState<google.maps.DirectionsResult | null>(null);
   const [directionsFailed, setDirectionsFailed] = useState(false);
@@ -177,17 +178,29 @@ export default function MapScreen() {
     let cancelled = false;
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') return;
+      if (cancelled) return;
+      if (status !== 'granted') {
+        setLocationError(
+          'Location access is blocked, so your position cannot be shown on the map. Allow location for this site in your browser, then reload.'
+        );
+        return;
+      }
       try {
         subscription = await Location.watchPositionAsync(
           { accuracy: Location.Accuracy.High, timeInterval: 5000, distanceInterval: 15 },
           (loc) => {
             if (cancelled) return;
+            setLocationError(null);
             setResponderLocation({ lat: loc.coords.latitude, lng: loc.coords.longitude });
           }
         );
-      } catch {
-
+      } catch (err: unknown) {
+        if (cancelled) return;
+        const msg =
+          err && typeof err === 'object' && 'message' in err
+            ? String((err as { message: unknown }).message)
+            : String(err);
+        setLocationError(`Could not read your location: ${msg}`);
       }
     })();
     return () => {
@@ -446,6 +459,12 @@ export default function MapScreen() {
         </View>
       ) : null}
 
+      {locationError ? (
+        <View style={styles.locationBanner}>
+          <Text style={styles.locationBannerText}>{locationError}</Text>
+        </View>
+      ) : null}
+
       <View style={styles.dashboardRow}>
         <View style={styles.mapColumn}>{mapPane}</View>
         <View style={[styles.sidebarColumn, { height: mapHeight }]}>
@@ -501,6 +520,18 @@ const styles = StyleSheet.create({
     minHeight: 300,
     backgroundColor: WHITE,
     marginBottom: Spacing.md,
+  },
+  locationBanner: {
+    backgroundColor: DANGER_BG,
+    borderWidth: 1,
+    borderColor: DANGER_BORDER,
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    marginBottom: Spacing.md,
+  },
+  locationBannerText: {
+    fontSize: FontSizes.sm,
+    color: BRAND_RED,
   },
   card: {
     marginTop: Spacing.md,
