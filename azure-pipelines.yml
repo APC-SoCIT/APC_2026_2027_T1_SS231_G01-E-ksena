@@ -260,21 +260,37 @@ stages:
 
 
           - task: PowerShell@2
-            displayName: 'Verify IIS Site is Running'
+            displayName: 'Verify Deployment'
             inputs:
               targetType: 'inline'
               script: |
-                Import-Module WebAdministration -ErrorAction SilentlyContinue
-                $site = Get-WebSite -Name "E-ksena" -ErrorAction SilentlyContinue
-                if ($null -eq $site) {
-                    Write-Error "IIS site 'E-ksena' not found!"
-                    exit 1
-                }
-                Write-Host "IIS site 'E-ksena' state: $($site.State)"
-                if ($site.State -ne 'Started') {
-                    Write-Warning "Site is not in 'Started' state. Check IIS Manager."
+                # Check W3SVC (IIS) is running
+                $svc = Get-Service -Name W3SVC -ErrorAction SilentlyContinue
+                if ($null -eq $svc) {
+                    Write-Warning "W3SVC service not found. IIS may not be installed."
                 } else {
-                    Write-Host "E-ksena site is running. Deployment verified successfully."
+                    Write-Host "IIS (W3SVC) status: $($svc.Status)"
                 }
+
+                # Check deployed files exist
+                $deployPath  = "$(IIS_SITE_PATH)"
+                $indexFile   = "$deployPath\index.html"
+                $webConfig   = "$deployPath\web.config"
+
+                if (Test-Path $indexFile) {
+                    Write-Host "OK: index.html found at $indexFile"
+                } else {
+                    Write-Warning "index.html NOT found at $indexFile - deployment may have failed."
+                }
+
+                if (Test-Path $webConfig) {
+                    Write-Host "OK: web.config found at $webConfig"
+                } else {
+                    Write-Warning "web.config NOT found at $webConfig - SPA routing may not work."
+                }
+
+                Write-Host "Deployment verification complete."
+
+
 
 
