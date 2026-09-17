@@ -21,14 +21,16 @@ type LoginScreenNavigationProp = StackNavigationProp<AuthStackParamList, 'Login'
 
 const LoginScreen: React.FC = () => {
   const navigation = useNavigation<LoginScreenNavigationProp>();
-  const { login, state, clearError } = useAuth();
+  const { requestOtp, verifyOtp, state, clearError } = useAuth();
+  
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const [step, setStep] = useState<'email' | 'otp'>('email');
   const [isLoading, setIsLoading] = useState(false);
 
-  const handleLogin = async () => {
-    if (!email.trim() || !password.trim()) {
-      Alert.alert('Error', 'Please fill in all fields');
+  const handleSendOtp = async () => {
+    if (!email.trim()) {
+      Alert.alert('Error', 'Please enter your email address');
       return;
     }
 
@@ -36,17 +38,32 @@ const LoginScreen: React.FC = () => {
     clearError();
 
     try {
-      await login(email.trim(), password);
-      // Navigation will be handled automatically by the AuthContext state change
+      await requestOtp(email.trim());
+      setStep('otp');
     } catch (error) {
-      Alert.alert('Login Failed', error instanceof Error ? error.message : 'An error occurred');
+      Alert.alert('Error', error instanceof Error ? error.message : 'An error occurred');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const navigateToRegister = () => {
-    navigation.navigate('Register');
+  const handleVerifyOtp = async () => {
+    if (!otpCode.trim() || otpCode.length !== 6) {
+      Alert.alert('Error', 'Please enter the 6-digit code');
+      return;
+    }
+
+    setIsLoading(true);
+    clearError();
+
+    try {
+      await verifyOtp(email.trim(), otpCode.trim());
+      // Navigation handled by AuthContext state change automatically
+    } catch (error) {
+      Alert.alert('Verification Failed', error instanceof Error ? error.message : 'Invalid code');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -70,7 +87,7 @@ const LoginScreen: React.FC = () => {
                 <Mail size={20} color="#6b7280" style={styles.inputIcon} />
                 <TextInput
                   style={styles.input}
-                  placeholder="Username or Email"
+                  placeholder="Email Address"
                   placeholderTextColor="#9ca3af"
                   value={email}
                   onChangeText={setEmail}
@@ -78,6 +95,15 @@ const LoginScreen: React.FC = () => {
                   keyboardType="email-address"
                   autoCorrect={false}
                 />
+                <TouchableOpacity 
+                  onPress={handleSendOtp} 
+                  disabled={isLoading || !email.trim()}
+                  style={styles.sendCodeBtn}
+                >
+                  <Text style={styles.sendCodeText}>
+                    {isLoading && step === 'email' ? 'Sending...' : 'Send code'}
+                  </Text>
+                </TouchableOpacity>
               </View>
             </View>
 
@@ -86,43 +112,33 @@ const LoginScreen: React.FC = () => {
                 <Lock size={20} color="#6b7280" style={styles.inputIcon} />
                 <TextInput
                   style={styles.input}
-                  placeholder="Password"
+                  placeholder="OTP"
                   placeholderTextColor="#9ca3af"
-                  value={password}
-                  onChangeText={setPassword}
-                  secureTextEntry
-                  autoCapitalize="none"
-                  autoCorrect={false}
+                  value={otpCode}
+                  onChangeText={setOtpCode}
+                  keyboardType="number-pad"
+                  maxLength={6}
                 />
               </View>
             </View>
 
             <TouchableOpacity
-              style={[styles.loginButton, isLoading && styles.loginButtonDisabled]}
-              onPress={handleLogin}
-              disabled={isLoading}
+              style={[styles.loginButton, (isLoading || !otpCode.trim()) && styles.loginButtonDisabled]}
+              onPress={handleVerifyOtp}
+              disabled={isLoading || !otpCode.trim()}
             >
               <Text style={styles.loginButtonText}>
-                {isLoading ? 'Logging in...' : 'Login'}
+                {isLoading && step === 'otp' ? 'Verifying...' : 'Login'}
               </Text>
             </TouchableOpacity>
+            
+            {step === 'otp' && !state.auth.error && (
+              <Text style={styles.successText}>Code sent! Please check your email.</Text>
+            )}
 
             {state.auth.error && (
               <Text style={styles.errorText}>{state.auth.error}</Text>
             )}
-
-            <View style={styles.footer}>
-              <Text style={styles.footerText}>Don't have an account?</Text>
-              <TouchableOpacity onPress={navigateToRegister}>
-                <Text style={styles.linkText}>Register here</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.demoInfo}>
-              <Text style={styles.demoTitle}>Demo Credentials:</Text>
-              <Text style={styles.demoText}>Username: Juan Manalo</Text>
-              <Text style={styles.demoText}>Password: password</Text>
-            </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -213,42 +229,35 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 10,
   },
-  footer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 30,
-  },
-  footerText: {
-    color: '#6b7280',
+  infoText: {
+    textAlign: 'center',
+    marginBottom: 20,
     fontSize: 14,
+    color: '#374151',
   },
   linkText: {
     color: '#dc2626',
     fontSize: 14,
     fontWeight: '600',
-    marginLeft: 5,
   },
-  demoInfo: {
-    marginTop: 30,
-    padding: 16,
-    backgroundColor: '#f3f4f6',
+  sendCodeBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#fef2f2',
     borderRadius: 8,
-    borderLeftWidth: 4,
-    borderLeftColor: '#dc2626',
+    marginLeft: 8,
   },
-  demoTitle: {
+  sendCodeText: {
+    color: '#dc2626',
     fontSize: 14,
     fontWeight: '600',
-    color: '#374151',
-    marginBottom: 8,
   },
-  demoText: {
-    fontSize: 12,
-    color: '#6b7280',
-    marginBottom: 2,
+  successText: {
+    color: '#16a34a',
+    fontSize: 14,
+    textAlign: 'center',
+    marginTop: 15,
   },
 });
 
 export default LoginScreen;
-

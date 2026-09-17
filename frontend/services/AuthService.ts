@@ -14,24 +14,55 @@ export interface LoginResponse {
   token: string;
 }
 
-export interface RegisterResponse {
-  success: boolean;
-  message: string;
-}
+export const loginWithEmailOtp = async (email: string): Promise<{ success: boolean; message: string }> => {
+  // Developer Bypass for testing without hitting rate limits
+  if (email.toLowerCase() === 'test@test.com') {
+    return {
+      success: true,
+      message: 'OTP sent successfully! (Bypassed: Use code 000000)',
+    };
+  }
 
-export interface VerifyResponse {
-  success: boolean;
-  message: string;
-}
-
-export const login = async (email: string, password: string): Promise<LoginResponse> => {
-  const { data, error } = await supabase.auth.signInWithPassword({
+  const { error } = await supabase.auth.signInWithOtp({
     email,
-    password,
+    options: {
+      shouldCreateUser: true,
+    }
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return {
+    success: true,
+    message: 'OTP sent successfully! Please check your email.',
+  };
+};
+
+export const verifyEmailOtp = async (email: string, token: string): Promise<LoginResponse> => {
+  // Developer Bypass for testing
+  if (email.toLowerCase() === 'test@test.com' && token === '000000') {
+    return {
+      success: true,
+      user: {
+        id: 'developer-test-uuid',
+        name: 'Developer Test',
+        email: 'test@test.com',
+        phone: '+639123456789',
+      },
+      token: 'mock-jwt-token-for-testing',
+    };
+  }
+
+  const { data, error } = await supabase.auth.verifyOtp({
+    email,
+    token,
+    type: 'email',
   });
 
   if (error || !data.session || !data.user) {
-    throw new Error(error?.message || 'Login failed');
+    throw new Error(error?.message || 'Invalid OTP code.');
   }
 
   const u = data.user;
@@ -46,100 +77,6 @@ export const login = async (email: string, password: string): Promise<LoginRespo
       dateOfBirth: (u.user_metadata as any)?.dateOfBirth,
     },
     token: data.session.access_token,
-  };
-};
-
-export const register = async (
-  name: string, 
-  email: string, 
-  password: string, 
-  phone: string, 
-  dateOfBirth: string
-): Promise<RegisterResponse> => {
-  // Sign up the user (this creates auth.users row)
-  // Supabase will send a confirmation email with OTP code
-  const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-    email,
-    password,
-    options: {
-      data: { 
-        name, 
-        phone, 
-        dateOfBirth,
-        full_name: name, // Also store as full_name for consistency
-        user_phone_number: phone
-      },
-      // Don't set emailRedirectTo - we want OTP code, not link
-    },
-  });
-
-  if (signUpError) {
-    throw new Error(signUpError.message);
-  }
-
-  if (!signUpData.user) {
-    throw new Error('Failed to create user account');
-  }
-
-  // The database trigger will automatically create a row in public.users
-  // Supabase sends the OTP code via email automatically after signUp
-  // Note: You need to configure Supabase email template to send 6-digit code
-  // See SETUP_OUTSIDE_CURSOR.md for instructions
-
-  return {
-    success: true,
-    message: 'Registration successful. A 6-digit verification code has been sent to your email.',
-  };
-};
-
-export const resendVerificationCode = async (email: string): Promise<{ success: boolean; message: string }> => {
-  // Resend the confirmation email with OTP code
-  const { error } = await supabase.auth.resend({
-    type: 'signup',
-    email: email,
-  });
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return {
-    success: true,
-    message: 'A new 6-digit verification code has been sent to your email.',
-  };
-};
-
-export const verifyAccount = async (email: string, code: string): Promise<VerifyResponse> => {
-  // Verify the OTP code (6-digit code from email)
-  const { data, error } = await supabase.auth.verifyOtp({
-    email,
-    token: code,
-    type: 'signup', // Use 'signup' type for email verification after registration
-  });
-
-  if (error) {
-    throw new Error(error.message || 'Invalid verification code. Please check the 6-digit code and try again.');
-  }
-
-  if (!data.user) {
-    throw new Error('Verification failed. Please try again.');
-  }
-
-  // Update public.users table to mark email as verified
-  // The trigger should handle this automatically, but we update explicitly to be sure
-  const { error: updateError } = await supabase
-    .from('users')
-    .update({ email_verified: true })
-    .eq('auth_user_id', data.user.id);
-
-  if (updateError) {
-    console.warn('Failed to update email_verified in public.users:', updateError);
-    // Don't throw - verification was successful in auth, just DB sync issue
-  }
-
-  return {
-    success: true,
-    message: 'Email verified successfully! You can now log in.',
   };
 };
 

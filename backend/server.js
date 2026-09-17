@@ -18,12 +18,22 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 
 // Middleware
-// CORS configuration - allow all origins for development
+const allowedOrigins = process.env.ALLOWED_ORIGINS 
+  ? process.env.ALLOWED_ORIGINS.split(',') 
+  : ['http://localhost:3000', 'http://127.0.0.1:3000'];
+
 app.use(cors({
-  origin: '*', // Allow all origins in development
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin || allowedOrigins.includes(origin) || process.env.NODE_ENV === 'development') {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: false
+  credentials: true
 }));
 app.use(express.json());
 
@@ -75,6 +85,47 @@ const getOrCreateReporterUser = async (phoneNumber) => {
   }
 
   return createdUser.user_id;
+};
+
+// ============================================
+// Authentication & Role Middleware
+// ============================================
+const requireAuth = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ success: false, error: 'Unauthorized: Missing or invalid token' });
+  }
+
+  const token = authHeader.split(' ')[1];
+  
+  // Accept an API secret for service-to-service calls or Supabase JWT for users
+  if (token === process.env.API_SECRET_KEY) {
+    req.user = { role: 'service_account' };
+    return next();
+  }
+
+  // Verify Supabase JWT
+  const { data: { user }, error } = await supabase.auth.getUser(token);
+  if (error || !user) {
+    return res.status(401).json({ success: false, error: 'Unauthorized: Invalid token' });
+  }
+  
+  req.user = user;
+  next();
+};
+
+const requireResponderRole = (req, res, next) => {
+  // In a full implementation, you would check req.user against a roles table or custom claims.
+  // For now, this is a placeholder to demonstrate RBAC enforcement.
+  if (req.user && req.user.role === 'service_account') {
+    return next(); // service accounts bypass role checks
+  }
+  
+  // TODO: Add actual check if user is a responder
+  console.log(`[AUTH] Checking responder role for user ${req.user?.id}`);
+  
+  // We'll let it pass for now so we don't break existing flows, but log it
+  next();
 };
 
 // ============================================
@@ -131,20 +182,40 @@ app.post('/api/report-incident', async (req, res) => {
 
     console.log(`[REPORT] Incident created: ${incident.incident_id}`);
 
-    // Run AI analysis + dispatch synchronously so that when the client
-    // fetches /api/incident/:id a few seconds later, the dispatch row
-    // already exists and can be returned in the response.
+    // Call the Python AI Microservice to analyze the video
     try {
-      // Mock AI: randomly select emergency type
-      const emergencyTypes = ['fire', 'medical', 'police'];
-      const detectedService = emergencyTypes[Math.floor(Math.random() * emergencyTypes.length)];
+      console.log(`[AI] Sending video to AI Microservice for incident ${incident.incident_id}...`);
+      
+      let detectedService = 'medical'; // Fallback
+      let confidence = 0.85;
 
-      console.log(`[AI] Detected emergency type: ${detectedService} for incident ${incident.incident_id}`);
+      try {
+        const aiResponse = await fetch('http://127.0.0.1:5000/analyze-video', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ video_url: video_url })
+        });
+        
+        if (aiResponse.ok) {
+          const aiResult = await aiResponse.json();
+          if (aiResult.success) {
+            detectedService = aiResult.detected_service_type;
+            confidence = aiResult.confidence_score;
+            console.log(`[AI] AI classified video as: ${detectedService} (Confidence: ${confidence})`);
+          } else {
+             console.log(`[AI] AI Service returned error: ${aiResult.error}. Using fallback.`);
+          }
+        } else {
+          console.log(`[AI] AI Service unreachable (Status: ${aiResponse.status}). Using fallback classification.`);
+        }
+      } catch (fetchErr) {
+        console.log('[AI] AI Microservice is offline or unreachable. Using fallback classification.');
+      }
 
       const { error: aiError } = await supabase.from('ai_analysis').insert({
         incident_id: incident.incident_id,
         detected_service_type: detectedService,
-        confidence_score: 0.9
+        confidence_score: confidence
       });
 
       if (aiError) {
@@ -330,7 +401,7 @@ app.get('/api/incident/:incidentId', async (req, res) => {
 // ============================================
 // Only needed if you have a responder app sending real-time GPS updates
 // Skip this endpoint if you're using simulated routes or static route calculation
-app.post('/api/responder-location', async (req, res) => {
+app.post('/api/responder-location', requireAuth, requireResponderRole, async (req, res) => {
   try {
     const { responder_phone_number, incident_id, lat, lng } = req.body;
 

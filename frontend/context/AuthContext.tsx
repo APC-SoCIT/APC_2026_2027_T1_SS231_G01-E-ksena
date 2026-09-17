@@ -1,5 +1,5 @@
 import React, { createContext, ReactNode, useContext, useReducer, useEffect, useState } from 'react';
-import { login as authLogin, logout as authLogout } from '../services/AuthService';
+import { loginWithEmailOtp, verifyEmailOtp, logout as authLogout } from '../services/AuthService';
 import { onPendingResponderRoute, ResponderRoutePayload } from '../services/ReportService';
 
 // Auth State Interface
@@ -131,7 +131,8 @@ const appReducer = (state: AppState, action: AppAction): AppState => {
 interface AuthContextType {
   state: AppState;
   dispatch: React.Dispatch<AppAction>;
-  login: (email: string, password: string) => Promise<void>;
+  requestOtp: (email: string) => Promise<void>;
+  verifyOtp: (email: string, token: string) => Promise<void>;
   logout: () => void;
   clearError: () => void;
   setLocation: (latitude: number, longitude: number, address?: string) => void;
@@ -169,10 +170,24 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     console.log('[AuthContext] pendingResponderRoute state updated:', pendingResponderRoute);
   }, [pendingResponderRoute]);
 
-  const login = async (email: string, password: string) => {
+  const requestOtp = async (email: string) => {
     dispatch({ type: 'LOGIN_START' });
     try {
-      const result = await authLogin(email, password);
+      await loginWithEmailOtp(email);
+      dispatch({ type: 'SET_LOADING', payload: false });
+    } catch (error) {
+      dispatch({ 
+        type: 'LOGIN_FAILURE', 
+        payload: error instanceof Error ? error.message : 'Failed to send OTP' 
+      });
+      throw error;
+    }
+  };
+
+  const verifyOtp = async (email: string, token: string) => {
+    dispatch({ type: 'LOGIN_START' });
+    try {
+      const result = await verifyEmailOtp(email, token);
       dispatch({
         type: 'LOGIN_SUCCESS',
         payload: { user: result.user, token: result.token },
@@ -180,8 +195,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     } catch (error) {
       dispatch({ 
         type: 'LOGIN_FAILURE', 
-        payload: error instanceof Error ? error.message : 'Login failed' 
+        payload: error instanceof Error ? error.message : 'Invalid OTP' 
       });
+      throw error;
     }
   };
 
@@ -204,7 +220,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const value: AuthContextType = {
     state,
     dispatch,
-    login,
+    requestOtp,
+    verifyOtp,
     logout,
     clearError,
     setLocation,

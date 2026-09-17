@@ -1,6 +1,6 @@
 import { useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
-import { ArrowLeft, RotateCcw, Video as VideoIcon, VideoOff, Zap } from 'lucide-react-native';
+import { ArrowLeft, RotateCcw, Video as VideoIcon, VideoOff } from 'lucide-react-native';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Alert,
@@ -15,16 +15,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
 import { MainStackParamList } from '../../navigation/MainStack';
-import { sendVideoReport, setPendingResponderRoute } from '../../services/ReportService';
+import { sendVideoReport } from '../../services/ReportService';
 import { supabase } from '../../services/supabaseClient';
-import {
-  RTCPeerConnection,
-  RTCView,
-  mediaDevices,
-  RTCIceCandidate,
-  RTCSessionDescription,
-  MediaStream,
-} from 'react-native-webrtc';
+import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
 
 type VideoCameraScreenNavigationProp = StackNavigationProp<MainStackParamList, 'MainTabs'>;
 
@@ -32,13 +25,13 @@ const VideoCameraScreen: React.FC = () => {
   const navigation = useNavigation<VideoCameraScreenNavigationProp>();
   const { state } = useAuth();
   
-  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const pcRef = useRef<RTCPeerConnection | null>(null);
-  const channelRef = useRef<any>(null);
+  const cameraRef = useRef<CameraView>(null);
 
-  const [hasPermission, setHasPermission] = useState<boolean | null>(null);
+  const [camPermission, requestCam] = useCameraPermissions();
+  const [micPermission, requestMic] = useMicrophonePermissions();
+
   const [isRecording, setIsRecording] = useState(false);
-  const [cameraType, setCameraType] = useState<'environment' | 'user'>('environment');
+  const [cameraType, setCameraType] = useState<'back' | 'front'>('back');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   
   const [showBucketModal, setShowBucketModal] = useState(false);
@@ -46,160 +39,84 @@ const VideoCameraScreen: React.FC = () => {
   const [loadingBucket, setLoadingBucket] = useState(false);
 
   useEffect(() => {
-    startLocalStream();
-    return () => {
-      cleanupWebRTC();
-    };
-  }, [cameraType]);
-
-  const startLocalStream = async () => {
-    try {
-      if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-      }
-      
-      const stream = await mediaDevices.getUserMedia({
-        audio: true,
-        video: {
-          facingMode: cameraType,
-        },
-      });
-      setLocalStream(stream);
-      setHasPermission(true);
-    } catch (err) {
-      console.error('Failed to get local stream', err);
-      setHasPermission(false);
-      Alert.alert('Camera Error', 'Could not access the camera or microphone');
-    }
-  };
-
-  const cleanupWebRTC = () => {
-    if (pcRef.current) {
-      pcRef.current.close();
-      pcRef.current = null;
-    }
-    if (channelRef.current) {
-      channelRef.current.unsubscribe();
-      channelRef.current = null;
-    }
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-      setLocalStream(null);
-    }
-  };
-
-  const stopRecording = () => {
-    setIsRecording(false);
-    setIsAnalyzing(false);
-    if (pcRef.current) {
-      pcRef.current.close();
-      pcRef.current = null;
-    }
-    if (channelRef.current) {
-      channelRef.current.unsubscribe();
-      channelRef.current = null;
-    }
-    Alert.alert('Emergency Ended', 'Your live broadcast has been disconnected.', [
-      { text: 'OK', onPress: () => navigation.navigate('MainTabs' as any) }
-    ]);
-  };
+    if (!camPermission?.granted) requestCam();
+    if (!micPermission?.granted) requestMic();
+  }, [camPermission, micPermission]);
 
   const toggleCameraType = () => {
-    setCameraType(current => (current === 'environment' ? 'user' : 'environment'));
+    setCameraType(current => (current === 'back' ? 'front' : 'back'));
   };
 
-  const startEmergencyWebRTC = async () => {
-    if (!localStream) return;
+  const startEmergencyRecording = async () => {
+    if (!cameraRef.current) return;
     
-    setIsRecording(true);
-    setIsAnalyzing(true);
-
     try {
-      // 1. Create Incident in Database to get incidentId
+      setIsRecording(true);
+      console.log('[FRONTEND] Starting 5-second video recording...');
+      
+      // Stop recording automatically after 5 seconds
+      setTimeout(() => {
+        if (cameraRef.current) {
+          cameraRef.current.stopRecording();
+        }
+      }, 5000);
+
+      const video = await cameraRef.current.recordAsync();
+      
+      setIsRecording(false);
+      setIsAnalyzing(true);
+      console.log('[FRONTEND] Recording finished. Uploading to Supabase...', video?.uri);
+
+      if (!video?.uri) {
+        throw new Error('No video URI returned from camera');
+      }
+
+      // 1. Upload to Supabase bucket "incident-videos"
+      const fileName = `emergency_${Date.now()}.mp4`;
+      
+      const formData = new FormData();
+      formData.append('file', {
+        uri: video.uri,
+        name: fileName,
+        type: 'video/mp4'
+      } as any);
+
+      const { data, error } = await supabase.storage.from('incident-videos').upload(fileName, formData, {
+        contentType: 'multipart/form-data',
+      });
+
+      if (error) {
+         throw new Error(`Supabase upload error: ${error.message}`);
+      }
+
+      // 2. Get Public URL
+      const { data: urlData } = supabase.storage.from('incident-videos').getPublicUrl(fileName);
+      const publicUrl = urlData.publicUrl;
+      console.log('[FRONTEND] Upload complete! Public URL:', publicUrl);
+
+      // 3. Create Incident in Database (Backend will call AI Microservice with this URL)
       const { latitude, longitude, address } = state.location;
       if (!latitude || !longitude) throw new Error('Location is missing');
       
       const userPhoneNumber = state.auth.user?.phone ? String(state.auth.user.phone) : 'unknown';
       
-      // Use "live://webrtc" as a placeholder video URL for the backend
-      const result = await sendVideoReport('live://webrtc', { latitude, longitude, address: address ?? undefined }, userPhoneNumber, 'live://webrtc');
+      const result = await sendVideoReport(video.uri, { latitude, longitude, address: address ?? undefined }, userPhoneNumber, publicUrl);
       
+      setIsAnalyzing(false);
+
       if (!result.success || !result.report?.id) {
          throw new Error('Failed to create incident on server');
       }
       
-      const incidentId = result.report.id;
-      
-      const responderStart = result.report.responderBase
-          ? { latitude: result.report.responderBase.latitude, longitude: result.report.responderBase.longitude }
-          : { latitude: latitude + 0.01, longitude: longitude - 0.01 };
-
-      setPendingResponderRoute({
-          incidentId: incidentId,
-          responderStart,
-          userLocation: { latitude, longitude, address: address ?? undefined },
-          dispatcherName: result.report.assignedDispatcher?.name || 'Dispatcher',
-          dispatcherPhone: result.report.assignedDispatcher?.phone,
-          responderBase: result.report.responderBase,
-      });
-
-      // 2. Setup WebRTC Peer Connection
-      const pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
-        ]
-      });
-      pcRef.current = pc;
-      
-      // Add local stream tracks to the connection
-      localStream.getTracks().forEach((track) => {
-        pc.addTrack(track, localStream);
-      });
-
-      // 3. Connect to Supabase Channel
-      const channel = supabase.channel(`webrtc-incident-${incidentId}`);
-      channelRef.current = channel;
-      
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          channel.send({
-            type: 'broadcast',
-            event: 'webrtc-signaling',
-            payload: { type: 'candidate', candidate: event.candidate, sender: 'caller' }
-          });
-        }
-      };
-      
-      channel.on('broadcast', { event: 'webrtc-signaling' }, async ({ payload }) => {
-         if (payload.sender === 'caller') return; 
-         
-         if (payload.type === 'answer') {
-            await pc.setRemoteDescription(new RTCSessionDescription(payload.answer));
-            setIsAnalyzing(false); // Connected!
-         }
-         else if (payload.type === 'candidate' && payload.candidate) {
-            await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
-         }
-      });
-      
-      channel.subscribe(async (status) => {
-         if (status === 'SUBSCRIBED') {
-            const offer = await pc.createOffer({});
-            await pc.setLocalDescription(offer);
-            
-            channel.send({
-              type: 'broadcast',
-              event: 'webrtc-signaling',
-              payload: { type: 'offer', offer: offer, sender: 'caller' }
-            });
-         }
-      });
+      Alert.alert('Emergency Reported', 'Your video was successfully analyzed and responders are notified!', [
+        { text: 'OK', onPress: () => navigation.navigate('MainTabs' as any) }
+      ]);
       
     } catch (err) {
-       console.error('WebRTC Error:', err);
-       Alert.alert('Connection Failed', String(err));
-       stopRecording();
+       console.error('Recording/Upload Error:', err);
+       setIsRecording(false);
+       setIsAnalyzing(false);
+       Alert.alert('Emergency Failed', String(err));
     }
   };
 
@@ -243,13 +160,23 @@ const VideoCameraScreen: React.FC = () => {
     }
   };
 
-  if (hasPermission === false) {
+  if (!camPermission || !micPermission) {
+    return (
+       <SafeAreaView style={styles.container}>
+        <View style={styles.errorContainer}>
+           <ActivityIndicator size="large" color="#dc2626" />
+        </View>
+       </SafeAreaView>
+    );
+  }
+
+  if (!camPermission.granted || !micPermission.granted) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.errorContainer}>
-          <Text style={styles.errorText}>Camera access denied</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={startLocalStream}>
-            <Text style={styles.retryButtonText}>Retry</Text>
+          <Text style={styles.errorText}>Camera and Microphone access denied</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={() => { requestCam(); requestMic(); }}>
+            <Text style={styles.retryButtonText}>Grant Permissions</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -271,31 +198,27 @@ const VideoCameraScreen: React.FC = () => {
       </View>
 
       <View style={styles.cameraContainer}>
-        {localStream ? (
-          <RTCView
-            streamURL={localStream.toURL()}
-            style={styles.camera}
-            objectFit="cover"
-          />
-        ) : (
-          <View style={[styles.camera, { backgroundColor: '#222', justifyContent:'center', alignItems:'center' }]}>
-             <ActivityIndicator size="large" color="#dc2626" />
-          </View>
-        )}
+        <CameraView
+          ref={cameraRef}
+          style={styles.camera}
+          facing={cameraType}
+          mode="video"
+        />
 
         {isRecording && (
           <View style={styles.recordingIndicator}>
             <View style={styles.recordingDot} />
-            <Text style={styles.recordingText}>LIVE</Text>
+            <Text style={styles.recordingText}>RECORDING (5s)</Text>
           </View>
         )}
 
         {isAnalyzing && (
           <View style={styles.aiOverlay}>
             <View style={styles.aiAlert}>
-              <Text style={styles.aiAlertText}>Connecting...</Text>
+              <ActivityIndicator size="large" color="#ffffff" />
+              <Text style={styles.aiAlertText}>Analyzing...</Text>
               <Text style={styles.aiSubText}>
-                Establishing secure video link to responder...
+                AI is verifying the emergency
               </Text>
             </View>
           </View>
@@ -305,7 +228,8 @@ const VideoCameraScreen: React.FC = () => {
       <View style={styles.controlsContainer}>
         <TouchableOpacity
           style={[styles.recordButton, isRecording && styles.recordButtonActive]}
-          onPress={isRecording ? stopRecording : startEmergencyWebRTC}
+          onPress={startEmergencyRecording}
+          disabled={isRecording || isAnalyzing}
         >
           {isRecording ? (
             <VideoOff size={32} color="#ffffff" />
@@ -317,7 +241,7 @@ const VideoCameraScreen: React.FC = () => {
           <Text style={styles.bucketButtonText}>Pick</Text>
         </TouchableOpacity>
         <Text style={styles.instructionText}>
-          {isRecording ? 'Tap to end broadcast' : 'Tap to START LIVE BROADCAST'}
+          {isRecording ? 'Recording emergency clip...' : 'Tap to START RECORDING'}
         </Text>
       </View>
 
@@ -369,9 +293,9 @@ const styles = StyleSheet.create({
   iconButton: { padding: 6 },
   cameraContainer: { flex: 1, margin: 16, borderRadius: 12, overflow: 'hidden' },
   camera: { flex: 1 },
-  aiOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(220, 38, 38, 0.3)' },
-  aiAlert: { backgroundColor: 'rgba(220, 38, 38, 0.9)', paddingHorizontal: 20, paddingVertical: 16, borderRadius: 12, alignItems: 'center' },
-  aiAlertText: { color: '#ffffff', fontSize: 20, fontWeight: 'bold', marginBottom: 4 },
+  aiOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(220, 38, 38, 0.7)' },
+  aiAlert: { backgroundColor: 'rgba(0, 0, 0, 0.8)', paddingHorizontal: 30, paddingVertical: 24, borderRadius: 16, alignItems: 'center' },
+  aiAlertText: { color: '#ffffff', fontSize: 20, fontWeight: 'bold', marginTop: 12, marginBottom: 4 },
   aiSubText: { color: '#ffffff', fontSize: 14, opacity: 0.9, textAlign: 'center' },
   recordingIndicator: { position: 'absolute', top: 20, left: 20, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(220, 38, 38, 0.9)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
   recordingDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#ffffff', marginRight: 8 },

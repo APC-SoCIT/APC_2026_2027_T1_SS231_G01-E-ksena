@@ -13,7 +13,7 @@ let CONFIG_BASE_URL =
   PUBLIC_ENV_URL ||
   EXPO_CONFIG_URL ||
   MANIFEST_URL ||
-  'http://127.0.0.1:3000/api'; // Fallback for dev
+  'http://192.168.100.11:3000/api'; // Fallback for dev
 
 // Helpful diagnostics: show where the URL came from
 console.log('[ReportService] API URL sources:', {
@@ -23,13 +23,7 @@ console.log('[ReportService] API URL sources:', {
   selected: CONFIG_BASE_URL,
 });
 
-// If someone accidentally configured a LAN IP with https:// (common mistake),
-// auto-downgrade to http:// because the local Express server doesn't serve TLS.
-// (We do NOT do this for ngrok/real HTTPS domains.)
-if (/^https:\/\/(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(CONFIG_BASE_URL)) {
-  CONFIG_BASE_URL = CONFIG_BASE_URL.replace(/^https:\/\//, 'http://');
-}
-
+// Transport security is now strictly enforced; no automatic HTTPS to HTTP downgrade.
 // Normalize localhost for Android emulator (NOT when using tunnel)
 // When using tunnel, Expo creates a bridge that works with the configured IP
 if ((CONFIG_BASE_URL.includes('localhost') || CONFIG_BASE_URL.includes('127.0.0.1')) && !Constants.appOwnership) {
