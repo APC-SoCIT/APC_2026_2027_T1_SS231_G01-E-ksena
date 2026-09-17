@@ -92,10 +92,10 @@
       ]
     ],
     "extra": {
-      "API_BASE_URL": "http://192.168.16.28:3000/api",
-      "SUPABASE_URL": "https://cwhduwianpugjbnqzmhs.supabase.co",
-      "SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN3aGR1d2lhbnB1Z2pibnF6bWhzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY0NzQ5MTUsImV4cCI6MjA4MjA1MDkxNX0.G8fbpwP6AVi00DNNSEbYC8ZMF4WYX0NIvCP0ZBPDxgg",
-      "MAPBOX_TOKEN": "pk.eyJ1IjoicGV0ZXItMTExMSIsImEiOiJjbXBlOGx0bW4wMXl1MnBxejEyaWJ0ZmZhIn0.njE1TKxllt2JYRt2RmqfnA",
+      "API_BASE_URL": "YOUR_API_URL",
+      "SUPABASE_URL": "YOUR_SUPABASE_URL",
+      "SUPABASE_ANON_KEY": "YOUR_SUPABASE_ANON_KEY",
+      "MAPBOX_TOKEN": "YOUR_MAPBOX_TOKEN",
       "router": {},
       "eas": {
         "projectId": "8f174c4d-8cf6-436e-9f75-17b8a2413e6f"
