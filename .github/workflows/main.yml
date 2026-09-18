@@ -47,7 +47,19 @@ jobs:
           git remote remove space 2>/dev/null || true
           git remote add space "$SPACE_URL"
 
-          git -c protocol.version=0 fetch space main
+                    echo "--- Testing HF token ---"
+          curl -s -o /dev/null -w "whoami status: %{http_code}\n" \
+            -H "Authorization: Bearer $HF_TOKEN" \
+            https://huggingface.co/api/whoami-v2
+
+          echo "--- Testing git-upload-pack endpoint directly ---"
+          curl -s -o /dev/null -w "info/refs status: %{http_code}\n" \
+            -u "${HF_USERNAME}:${HF_TOKEN}" \
+            "https://huggingface.co/spaces/4rima/emergency-ai-detector.git/info/refs?service=git-upload-pack"
+
+          echo "--- Verbose fetch ---"
+          GIT_CURL_VERBOSE=1 git -c protocol.version=0 fetch space main
+          
           git lfs fetch space main || true
 
           if git merge-base --is-ancestor space/main HEAD; then
