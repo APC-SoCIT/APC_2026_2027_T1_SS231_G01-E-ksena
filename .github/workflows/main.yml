@@ -1,0 +1,60 @@
+name: Sync from Hugging Face hub to Git AI branch
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-hf-to-ai
+  cancel-in-progress: false
+
+jobs:
+  sync-from-hub:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout GitHub Repository
+        uses: actions/checkout@v4
+        with:
+          ref: AI
+          fetch-depth: 0
+          lfs: true
+
+      - name: Pull from Hugging Face Space and Push to GitHub
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_USERNAME: "4rima"
+        run: |
+          set -euo pipefail
+
+          if [ -z "${HF_TOKEN:-}" ]; then
+            echo "HF_TOKEN secret is not set" >&2
+            exit 1
+          fi
+
+          echo "::add-mask::$HF_TOKEN"
+
+          git lfs install --local
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          SPACE_URL="https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/4rima/emergency-ai-detector.git"
+
+          git remote remove space 2>/dev/null || true
+          git remote add space "$SPACE_URL"
+
+          git -c protocol.version=0 fetch space main
+          git lfs fetch space main || true
+
+          if git merge-base --is-ancestor space/main HEAD; then
+            echo "Already up to date with the Space; nothing to do."
+            exit 0
+          fi
+
+          git merge space/main --allow-unrelated-histories --no-edit -m "Sync main branch from Hugging Face Space"
+
+          git push origin HEAD:AI
