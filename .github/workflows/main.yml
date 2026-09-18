@@ -1,13 +1,16 @@
 name: Sync from Hugging Face hub to Git AI branch
 
 on:
-  push:
-    branches: [AI]
-  # to run this workflow manually from the Actions tab
+  schedule:
+    - cron: "0 * * * *"   # hourly; adjust as needed
   workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: sync-hf-to-ai
+  cancel-in-progress: false
 
 jobs:
   sync-from-hub:
@@ -19,22 +22,46 @@ jobs:
           ref: AI
           fetch-depth: 0
           lfs: true
+          persist-credentials: true
 
       - name: Pull from Hugging Face Space and Push to GitHub
         env:
-          HF_TOKEN: ${{ secrets.HF_Token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
+          set -euo pipefail
+
+          if [ -z "${HF_TOKEN:-}" ]; then
+            echo "HF_TOKEN secret is not set" >&2
+            exit 1
+          fi
+
+          git lfs install --local
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Add Hugging Face Space remote
-          git remote add space https://4rima:$HF_TOKEN@huggingface.co/spaces/4rima/emergency-ai-detector
+          SPACE_URL="https://huggingface.co/spaces/4rima/emergency-ai-detector"
 
-          # Fetch main branch from Hugging Face
+          # Keep the token out of .git/config and the logs
+          AUTH=$(printf 'x-access-token:%s' "$HF_TOKEN" | base64 -w0)
+          echo "::add-mask::$AUTH"
+          git config --local http.https://huggingface.co/.extraheader \
+            "Authorization: Basic $AUTH"
+
+          git remote remove space 2>/dev/null || true
+          git remote add space "$SPACE_URL"
+
           git fetch space main
+          git lfs fetch space main || true
 
-          # Merge Hugging Face main into the checked out AI branch
-          git merge space/main --allow-unrelated-histories -m "Sync main branch from Hugging Face Space"
+          if git merge-base --is-ancestor space/main HEAD; then
+            echo "Already up to date with the Space; nothing to do."
+            exit 0
+          fi
 
-          # Push the merged changes back to GitHub's AI branch
-          git push origin AI
+          git merge space/main \
+            --allow-unrelated-histories \
+            --no-edit \
+            -m "Sync main branch from Hugging Face Space"
+
+          git push origin HEAD:AI
