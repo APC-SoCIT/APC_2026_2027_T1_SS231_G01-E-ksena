@@ -22,7 +22,7 @@ jobs:
 
       - name: Pull from Hugging Face Space and Push to GitHub
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_Token }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
