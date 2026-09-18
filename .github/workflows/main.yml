@@ -2,7 +2,7 @@ name: Sync from Hugging Face hub to Git AI branch
 
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "*/15 * * * *"   # adjust interval here
   workflow_dispatch:
 
 permissions:
@@ -37,36 +37,24 @@ jobs:
 
           echo "::add-mask::$HF_TOKEN"
 
-          git lfs install --local
-
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           SPACE_URL="https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/4rima/emergency-ai-detector.git"
 
-          git remote remove space 2>/dev/null || true
-          git remote add space "$SPACE_URL"
+          rm -rf /tmp/hf-space
+          git clone --depth 1 "$SPACE_URL" /tmp/hf-space
 
-                    echo "--- Testing HF token ---"
-          curl -s -o /dev/null -w "whoami status: %{http_code}\n" \
-            -H "Authorization: Bearer $HF_TOKEN" \
-            https://huggingface.co/api/whoami-v2
+          rsync -a --delete \
+            --exclude='.git' \
+            /tmp/hf-space/ ./
 
-          echo "--- Testing git-upload-pack endpoint directly ---"
-          curl -s -o /dev/null -w "info/refs status: %{http_code}\n" \
-            -u "${HF_USERNAME}:${HF_TOKEN}" \
-            "https://huggingface.co/spaces/4rima/emergency-ai-detector.git/info/refs?service=git-upload-pack"
+          git add -A
 
-          echo "--- Verbose fetch ---"
-          GIT_CURL_VERBOSE=1 git -c protocol.version=0 fetch space main
-          
-          git lfs fetch space main || true
-
-          if git merge-base --is-ancestor space/main HEAD; then
-            echo "Already up to date with the Space; nothing to do."
+          if git diff --cached --quiet; then
+            echo "No changes from the Space; nothing to commit."
             exit 0
           fi
 
-          git merge space/main --allow-unrelated-histories --no-edit -m "Sync main branch from Hugging Face Space"
-
+          git commit -m "Sync from Hugging Face Space [skip ci]"
           git push origin HEAD:AI
