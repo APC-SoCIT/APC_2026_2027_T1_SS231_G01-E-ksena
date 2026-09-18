@@ -16,4 +16,7 @@ jobs:
       - name: Push to hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push https://4rima:$HF_TOKEN@huggingface.co/spaces/4rima/emergency-ai-detector main
+        git remote add space https://4rima:$HF_TOKEN@huggingface.co/spaces/4rima/emergency-ai-detector
+        git fetch space main
+        git rebase space/main || git merge space/main --allow-unrelated-histories -m "Sync HF Space"
+        git push space main
