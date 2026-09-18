@@ -1,32 +1,7 @@
-name: Sync from Hugging Face hub to Git AI branch
-
-on:
-  schedule:
-    - cron: "0 * * * *"   # hourly; adjust as needed
-  workflow_dispatch:
-
-permissions:
-  contents: write
-
-concurrency:
-  group: sync-hf-to-ai
-  cancel-in-progress: false
-
-jobs:
-  sync-from-hub:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout GitHub Repository
-        uses: actions/checkout@v4
-        with:
-          ref: AI
-          fetch-depth: 0
-          lfs: true
-          persist-credentials: true
-
-      - name: Pull from Hugging Face Space and Push to GitHub
+name: Pull from Hugging Face Space and Push to GitHub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_USERNAME: "4rima"
         run: |
           set -euo pipefail
 
@@ -35,6 +10,9 @@ jobs:
             exit 1
           fi
 
+          # mask the token so it never appears in logs even if something echoes it
+          echo "::add-mask::$HF_TOKEN"
+
           git lfs install --local
 
           git config user.name "github-actions[bot]"
@@ -42,14 +20,13 @@ jobs:
 
           SPACE_URL="https://huggingface.co/spaces/4rima/emergency-ai-detector"
 
-          # Keep the token out of .git/config and the logs
-          AUTH=$(printf 'x-access-token:%s' "$HF_TOKEN" | base64 -w0)
-          echo "::add-mask::$AUTH"
-          git config --local http.https://huggingface.co/.extraheader \
-            "Authorization: Basic $AUTH"
-
           git remote remove space 2>/dev/null || true
           git remote add space "$SPACE_URL"
+
+          # credentials go through a credential helper instead of the URL or a
+          # hand-built header, so we don't have to get the auth scheme exactly right
+          git config --local credential."https://huggingface.co".helper \
+            '!f() { echo "username=${HF_USERNAME}"; echo "password=${HF_TOKEN}"; }; f'
 
           git fetch space main
           git lfs fetch space main || true
