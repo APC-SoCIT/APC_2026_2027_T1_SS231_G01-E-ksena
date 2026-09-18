@@ -1,4 +1,4 @@
-name: Pull from Hugging Face Space and Push to GitHub
+      - name: Pull from Hugging Face Space and Push to GitHub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_USERNAME: "4rima"
