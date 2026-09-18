@@ -1,22 +1,40 @@
-name: Sync to Hugging Face hub
+name: Sync from Hugging Face hub to Git AI branch
+
 on:
   push:
-    branches: [main]
+    branches: [AI]
   # to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  sync-to-hub:
+  sync-from-hub:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout GitHub Repository
+        uses: actions/checkout@v3
         with:
+          ref: AI
           fetch-depth: 0
           lfs: true
-      - name: Push to hub
+
+      - name: Pull from Hugging Face Space and Push to GitHub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        git remote add space https://4rima:$HF_TOKEN@huggingface.co/spaces/4rima/emergency-ai-detector HEAD:AI
-        git fetch space main
-        git rebase space/main || git merge space/main --allow-unrelated-histories -m "Sync HF Space"
-        git push space main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Add Hugging Face Space remote
+          git remote add space https://4rima:$HF_TOKEN@huggingface.co/spaces/4rima/emergency-ai-detector
+
+          # Fetch main branch from Hugging Face
+          git fetch space main
+
+          # Merge Hugging Face main into the checked out AI branch
+          git merge space/main --allow-unrelated-histories -m "Sync main branch from Hugging Face Space"
+
+          # Push the merged changes back to GitHub's AI branch
+          git push origin AI
