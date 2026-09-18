@@ -1,3 +1,28 @@
+name: Sync from Hugging Face hub to Git AI branch
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-hf-to-ai
+  cancel-in-progress: false
+
+jobs:
+  sync-from-hub:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout GitHub Repository
+        uses: actions/checkout@v4
+        with:
+          ref: AI
+          fetch-depth: 0
+          lfs: true
+
       - name: Pull from Hugging Face Space and Push to GitHub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -10,7 +35,6 @@
             exit 1
           fi
 
-          # mask the token so it never appears in logs even if something echoes it
           echo "::add-mask::$HF_TOKEN"
 
           git lfs install --local
@@ -23,8 +47,6 @@
           git remote remove space 2>/dev/null || true
           git remote add space "$SPACE_URL"
 
-          # credentials go through a credential helper instead of the URL or a
-          # hand-built header, so we don't have to get the auth scheme exactly right
           git config --local credential."https://huggingface.co".helper \
             '!f() { echo "username=${HF_USERNAME}"; echo "password=${HF_TOKEN}"; }; f'
 
