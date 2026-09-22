@@ -3,6 +3,7 @@ import { View, Text, ActivityIndicator, StyleSheet, Pressable, ScrollView, Alert
 import { GoogleMap, useJsApiLoader, Marker, DirectionsService, DirectionsRenderer } from '@react-google-maps/api';
 import { useFocusEffect } from '@react-navigation/native';
 import * as Location from 'expo-location';
+import { MaterialIcons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/auth';
 import { useRoleTheme } from '@/context/role-theme';
@@ -22,12 +23,16 @@ import {
   SUCCESS,
   SUCCESS_BG,
   ROUTE_BLUE,
+  RoleThemes,
+  type RoleThemeKey,
 } from '@/constants/theme';
 import { MAKATI_CENTER, isWithinMakati, haversineKm } from '@/lib/makati';
 import { GOOGLE_MAPS_API_KEY } from '@/lib/env';
 import { ResponderVideoPlayer } from '@/components/responder-video-player';
 import {
   getEmergencyTypesForRole,
+  defaultEmergencyTypeForRole,
+  matchResponderRole,
   emergencyTypeLabel,
   nextStatusAction,
   EMERGENCY_STATUS_LABELS,
@@ -69,7 +74,8 @@ export default function MapScreen() {
   const [reports, setReports] = useState<EmergencyReport[]>([]);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
+  const [reassignOpen, setReassignOpen] = useState(false);
+  const [reassigning, setReassigning] = useState(false);
   const [responderLocation, setResponderLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [addressCache, setAddressCache] = useState<Record<string, string>>({});
@@ -86,7 +92,7 @@ export default function MapScreen() {
     googleMapsApiKey: GOOGLE_MAPS_API_KEY,
   });
 
-  const visibleReports = useMemo(() => reports.filter((r) => !dismissedIds.has(r.id)), [reports, dismissedIds]);
+  const visibleReports = reports;
 
   const selectedReport = useMemo(
     () => visibleReports.find((r) => r.id === selectedId) ?? null,
@@ -213,6 +219,7 @@ export default function MapScreen() {
     setDirectionsResult(null);
     setDirectionsFailed(false);
     setStatusError(null);
+    setReassignOpen(false);
   }, [selectedId]);
 
   useEffect(() => {
@@ -269,9 +276,24 @@ export default function MapScreen() {
     }
   };
 
-  const handleDecline = (report: EmergencyReport) => {
-    setDismissedIds((prev) => new Set(prev).add(report.id));
-    setSelectedId((current) => (current === report.id ? null : current));
+  // Hands the incident to another responder service by changing its classification.
+  // It then drops off this responder's list and appears on the new service's dashboard.
+  const handleReassign = async (report: EmergencyReport, role: RoleThemeKey) => {
+    setStatusError(null);
+    setReassigning(true);
+    const { error } = await supabase
+      .from('reports')
+      .update({ classified_as: defaultEmergencyTypeForRole(role) })
+      .eq('report_id', report.id);
+    setReassigning(false);
+    if (error) {
+      setStatusError(error.message);
+      Alert.alert('Could not change responder type', error.message);
+      return;
+    }
+    setReassignOpen(false);
+    setReports((prev) => prev.filter((r) => r.id !== report.id));
+    setSelectedId(null);
   };
 
   if (loadError) {
@@ -373,9 +395,43 @@ export default function MapScreen() {
           {statusError ? <Text style={styles.statusErrorText}>{statusError}</Text> : null}
 
           <View style={styles.acceptRow}>
-            <Pressable onPress={() => handleDecline(selectedReport)} style={styles.declineBtn}>
-              <Text style={styles.declineBtnText}>Decline</Text>
-            </Pressable>
+            <View style={styles.reassignAnchor}>
+              <Pressable
+                onPress={() => setReassignOpen((open) => !open)}
+                style={[styles.reassignToggle, reassignOpen && { borderColor: theme.primary }]}
+                accessibilityRole="button"
+                accessibilityLabel="Change responder type"
+                accessibilityState={{ expanded: reassignOpen }}
+              >
+                <MaterialIcons
+                  name={reassignOpen ? 'keyboard-arrow-up' : 'keyboard-arrow-down'}
+                  size={28}
+                  color={reassignOpen ? theme.primary : TEXT_SECONDARY}
+                />
+              </Pressable>
+
+              {reassignOpen ? (
+                <View style={styles.reassignMenu}>
+                  <Text style={styles.reassignTitle}>Change responder type</Text>
+                  {(['police', 'medic', 'firefighter'] as RoleThemeKey[])
+                    .filter((role) => role !== (matchResponderRole(selectedReport.classified_as) ?? user?.role))
+                    .map((role) => (
+                      <Pressable
+                        key={role}
+                        disabled={reassigning}
+                        onPress={() => handleReassign(selectedReport, role)}
+                        style={({ pressed }) => [styles.reassignOption, pressed && styles.reassignOptionPressed]}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Reassign to ${RoleThemes[role].displayName}`}
+                      >
+                        <View style={[styles.reassignDot, { backgroundColor: RoleThemes[role].primary }]} />
+                        <Text style={styles.reassignOptionText}>{RoleThemes[role].displayName}</Text>
+                      </Pressable>
+                    ))}
+                  {reassigning ? <ActivityIndicator style={styles.reassignSpinner} color={theme.primary} /> : null}
+                </View>
+              ) : null}
+            </View>
             <Pressable
               onPress={() => handleStatusAction(selectedReport)}
               style={[styles.acceptBtn, { backgroundColor: theme.primary }]}
@@ -544,6 +600,8 @@ const styles = StyleSheet.create({
   selectedCard: {
     marginTop: 0,
     marginBottom: Spacing.lg,
+    // Keeps the floating reassign menu above the emergency list that follows the card.
+    zIndex: 10,
   },
   reportHeaderRow: {
     flexDirection: 'row',
@@ -640,19 +698,74 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: Spacing.sm,
   },
-  declineBtn: {
+  // Positioning context for the floating menu, so it hangs just below the arrow button.
+  reassignAnchor: {
+    width: 56,
+    position: 'relative',
+    zIndex: 20,
+  },
+  reassignToggle: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: Spacing.md,
+    justifyContent: 'center',
     borderRadius: Radius.md,
     borderWidth: 1,
     borderColor: BORDER,
     backgroundColor: WHITE,
   },
-  declineBtnText: {
-    fontSize: FontSizes.sm,
+  // Floats over the content below instead of pushing it down.
+  reassignMenu: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    marginTop: Spacing.xs,
+    minWidth: 220,
+    zIndex: 30,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: Radius.md,
+    backgroundColor: WHITE,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.16,
+    shadowRadius: 20,
+    elevation: 8,
+  },
+  reassignTitle: {
+    fontSize: FontSizes.xs,
     fontWeight: '600',
     color: TEXT_SECONDARY,
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.xs,
+  },
+  reassignOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: BORDER,
+  },
+  reassignOptionPressed: {
+    backgroundColor: OFF_WHITE,
+  },
+  reassignDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  reassignOptionText: {
+    fontSize: FontSizes.sm,
+    fontWeight: '600',
+    color: TEXT_PRIMARY,
+  },
+  reassignSpinner: {
+    paddingVertical: Spacing.sm,
   },
   acceptBtn: {
     flex: 1.4,

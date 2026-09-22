@@ -28,6 +28,10 @@ import { GOOGLE_MAPS_API_KEY } from '@/lib/env';
 
 const MAP_CONTAINER_STYLE = { width: '100%', height: 280 };
 
+// Accident and Violence stay in EMERGENCY_TYPES so reports already saved with those
+// types still route and display correctly; they just can't be chosen for new reports.
+const REPORTABLE_TYPES = EMERGENCY_TYPES.filter((t) => t.key !== 'accident' && t.key !== 'violence');
+
 export default function ExploreScreen() {
   const theme = useRoleTheme();
   const [emergencyType, setEmergencyType] = useState<string | null>(null);
@@ -130,7 +134,7 @@ export default function ExploreScreen() {
 
         <Text style={styles.label}>Emergency Type</Text>
         <View style={styles.typeRow}>
-          {EMERGENCY_TYPES.map((t) => (
+          {REPORTABLE_TYPES.map((t) => (
             <Pressable
               key={t.key}
               onPress={() => setEmergencyType(t.key)}

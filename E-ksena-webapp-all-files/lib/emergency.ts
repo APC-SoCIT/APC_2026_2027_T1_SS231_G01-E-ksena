@@ -15,7 +15,7 @@ export const EMERGENCY_TYPES: { key: EmergencyTypeKey; label: string; responderR
   { key: 'fire', label: 'Fire', responderRole: 'firefighter' },
   { key: 'medical', label: 'Medical Emergency', responderRole: 'medic' },
   { key: 'accident', label: 'Accident', responderRole: 'medic' },
-  { key: 'police', label: 'Police / Security', responderRole: 'police' },
+  { key: 'police', label: 'Police', responderRole: 'police' },
   { key: 'violence', label: 'Violence', responderRole: 'police' },
 ];
 
