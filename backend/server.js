@@ -190,7 +190,8 @@ app.post('/api/report-incident', async (req, res) => {
       let confidence = 0.85;
 
       try {
-        const aiResponse = await fetch('http://127.0.0.1:5000/analyze-video', {
+        const aiUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5000';
+        const aiResponse = await fetch(`${aiUrl}/analyze-video`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ video_url: video_url })
