@@ -95,9 +95,6 @@ export default {
     ],
     extra: {
       router: {},
-      eas: {
-        projectId: "8f174c4d-8cf6-436e-9f75-17b8a2413e6f"
-      }
     },
     experiments: {
       typedRoutes: true,
