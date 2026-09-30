@@ -85,13 +85,6 @@ export default {
           cameraPermission: "Allow this app to access the camera for live emergency video.",
           microphonePermission: "Allow this app to access the microphone for live emergency audio."
         }
-      ],
-      [
-        "@rnmapbox/maps",
-        {
-          RNMapboxMapsDownloadToken: process.env.EXPO_PUBLIC_MAPBOX_TOKEN || "YOUR_MAPBOX_SECRET_DOWNLOAD_TOKEN"
-        }
-      ]
     ],
     extra: {
       router: {},
