@@ -47,21 +47,22 @@ const VideoCameraScreen: React.FC = () => {
     setCameraType(current => (current === 'back' ? 'front' : 'back'));
   };
 
+  const toggleRecording = () => {
+    if (isRecording) {
+      cameraRef.current?.stopRecording();
+    } else {
+      startEmergencyRecording();
+    }
+  };
+
   const startEmergencyRecording = async () => {
     if (!cameraRef.current) return;
     
     try {
       setIsRecording(true);
-      console.log('[FRONTEND] Starting 5-second video recording...');
+      console.log('[FRONTEND] Starting video recording...');
       
-      // Stop recording automatically after 5 seconds
-      setTimeout(() => {
-        if (cameraRef.current) {
-          cameraRef.current.stopRecording();
-        }
-      }, 5000);
-
-      const video = await cameraRef.current.recordAsync();
+      const video = await cameraRef.current.recordAsync({ maxDuration: 60 });
       
       setIsRecording(false);
       setIsAnalyzing(true);
@@ -208,7 +209,7 @@ const VideoCameraScreen: React.FC = () => {
         {isRecording && (
           <View style={styles.recordingIndicator}>
             <View style={styles.recordingDot} />
-            <Text style={styles.recordingText}>RECORDING (5s)</Text>
+            <Text style={styles.recordingText}>RECORDING</Text>
           </View>
         )}
 
@@ -228,7 +229,7 @@ const VideoCameraScreen: React.FC = () => {
       <View style={styles.controlsContainer}>
         <TouchableOpacity
           style={[styles.recordButton, isRecording && styles.recordButtonActive]}
-          onPress={startEmergencyRecording}
+          onPress={toggleRecording}
           disabled={isRecording || isAnalyzing}
         >
           {isRecording ? (
@@ -237,7 +238,11 @@ const VideoCameraScreen: React.FC = () => {
             <VideoIcon size={32} color="#ffffff" />
           )}
         </TouchableOpacity>
-        <TouchableOpacity style={styles.bucketButton} onPress={openBucketModal}>
+        <TouchableOpacity 
+          style={[styles.bucketButton, (isRecording || isAnalyzing) && { opacity: 0.5 }]} 
+          onPress={openBucketModal}
+          disabled={isRecording || isAnalyzing}
+        >
           <Text style={styles.bucketButtonText}>Pick</Text>
         </TouchableOpacity>
         <Text style={styles.instructionText}>

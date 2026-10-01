@@ -3,7 +3,7 @@ import Constants from 'expo-constants';
 // NOTE: do NOT import @rnmapbox/maps here — that module requires native code
 // and will crash in Expo Go. This file only provides a Directions API helper
 // which performs HTTP requests to Mapbox web services.
-const token = (Constants.expoConfig as any)?.extra?.MAPBOX_TOKEN as string || process.env.MAPBOX_TOKEN;
+const token = process.env.EXPO_PUBLIC_MAPBOX_TOKEN;
 
 /**
  * Get directions between two points using Mapbox Directions API

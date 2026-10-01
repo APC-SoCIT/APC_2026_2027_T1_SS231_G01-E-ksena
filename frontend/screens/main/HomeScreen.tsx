@@ -7,7 +7,8 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import MapboxGL from '@rnmapbox/maps';
+import Map, { Marker, Source, Layer } from 'react-map-gl';
+import 'mapbox-gl/dist/mapbox-gl.css';
 import { getDirections } from '../../services/mapbox';
 import { Phone, MessageSquare, Video, Zap } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
@@ -16,7 +17,6 @@ import { consumePendingResponderRoute } from '../../services/ReportService';
 import Constants from 'expo-constants';
 
 const MAPBOX_TOKEN = (Constants.expoConfig as any)?.extra?.MAPBOX_TOKEN as string;
-MapboxGL.setAccessToken(MAPBOX_TOKEN);
 
 interface ResponderData {
   incidentId: string;
@@ -122,54 +122,51 @@ const HomeScreen: React.FC = () => {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Mapbox Map */}
-      <MapboxGL.MapView style={styles.map}>
-        <MapboxGL.Camera
-          centerCoordinate={mapCenter}
-          zoomLevel={12}
-          animationMode="flyTo"
-          animationDuration={500}
-        />
-
+      {/* react-map-gl Map */}
+      <Map
+        mapboxAccessToken={MAPBOX_TOKEN}
+        initialViewState={{
+          longitude: mapCenter[0],
+          latitude: mapCenter[1],
+          zoom: 12
+        }}
+        style={{flex: 1, width: '100%', height: '100%'}}
+        mapStyle="mapbox://styles/mapbox/streets-v12"
+      >
         {/* User location marker */}
-        <MapboxGL.PointAnnotation id="user-location" coordinate={userCoordinate}>
+        <Marker longitude={userCoordinate[0]} latitude={userCoordinate[1]}>
           <View style={styles.userMarker}>
             <View style={styles.markerDot} />
           </View>
-        </MapboxGL.PointAnnotation>
+        </Marker>
 
         {/* Responder markers and route */}
         {responderData && (
           <>
-            <MapboxGL.PointAnnotation
-              id="responder-location"
-              coordinate={[
-                responderData.responderLocation.longitude,
-                responderData.responderLocation.latitude,
-              ]}
+            <Marker
+              longitude={responderData.responderLocation.longitude}
+              latitude={responderData.responderLocation.latitude}
             >
               <View style={styles.responderMarker}>
                 <View style={styles.markerDot} />
               </View>
-            </MapboxGL.PointAnnotation>
+            </Marker>
 
             {responderData.responderBase && (
-              <MapboxGL.PointAnnotation
-                id="responder-base"
-                coordinate={[
-                  responderData.responderBase.longitude,
-                  responderData.responderBase.latitude,
-                ]}
+              <Marker
+                longitude={responderData.responderBase.longitude}
+                latitude={responderData.responderBase.latitude}
               >
                 <View style={styles.baseMarker}>
                   <View style={styles.markerDot} />
                 </View>
-              </MapboxGL.PointAnnotation>
+              </Marker>
             )}
 
-            <MapboxGL.ShapeSource
+            <Source
               id="route-line"
-              shape={{
+              type="geojson"
+              data={{
                 type: 'Feature',
                 geometry: {
                   type: 'LineString',
@@ -181,14 +178,18 @@ const HomeScreen: React.FC = () => {
                 properties: {},
               }}
             >
-              <MapboxGL.LineLayer
+              <Layer
                 id="route-layer"
-                style={{ lineColor: '#3b82f6', lineWidth: 4, lineJoin: 'round', lineCap: 'round' }}
+                type="line"
+                paint={{
+                  'line-color': '#3b82f6',
+                  'line-width': 4
+                }}
               />
-            </MapboxGL.ShapeSource>
+            </Source>
           </>
         )}
-      </MapboxGL.MapView>
+      </Map>
 
       {/* Overlay Controls */}
       <View style={styles.controlsOverlay}>
