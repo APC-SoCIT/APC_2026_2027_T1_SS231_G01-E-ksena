@@ -13,6 +13,12 @@ export type ResponderUser = {
 
 type AuthContextValue = {
   isResponder: boolean;
+  /**
+   * True when this account appears in the `admins` table. Deliberately not read
+   * from user_metadata: sign-up metadata is client-supplied, so an account could
+   * otherwise claim to be an admin. Defaults to false if the table is missing.
+   */
+  isAdmin: boolean;
   user: ResponderUser | null;
   loading: boolean;
   logout: () => Promise<void>;
@@ -52,6 +58,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const user = userFromSession(session);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    const uid = session?.user?.id;
+    if (!uid) {
+      setIsAdmin(false);
+      return;
+    }
+    let cancelled = false;
+    supabase
+      .from('admins')
+      .select('auth_user_id')
+      .eq('auth_user_id', uid)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!cancelled) setIsAdmin(!!data);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.user?.id]);
 
   const logout = async () => {
     await signOutResponder();
@@ -68,6 +95,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     <AuthContext.Provider
       value={{
         isResponder: !!user,
+        isAdmin,
         user,
         loading,
         logout,
