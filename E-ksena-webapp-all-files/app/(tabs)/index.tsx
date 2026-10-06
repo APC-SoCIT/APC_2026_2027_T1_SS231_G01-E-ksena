@@ -38,6 +38,7 @@ import {
   EMERGENCY_STATUS_LABELS,
   type EmergencyStatus,
 } from '@/lib/emergency';
+import { groupNearbyReports, PROXIMITY_RADIUS_KM, type ReportGroup } from '@/lib/proximity';
 
 interface EmergencyReport {
   id: string;
@@ -94,10 +95,15 @@ export default function MapScreen() {
 
   const visibleReports = reports;
 
-  const selectedReport = useMemo(
-    () => visibleReports.find((r) => r.id === selectedId) ?? null,
-    [visibleReports, selectedId]
+  // Several callers reporting the same emergency collapse into one group, so the
+  // responder answers once instead of once per caller.
+  const groups = useMemo(() => groupNearbyReports(visibleReports), [visibleReports]);
+  const selectedGroup = useMemo(
+    () => groups.find((g) => g.members.some((m) => m.id === selectedId)) ?? null,
+    [groups, selectedId]
   );
+
+  const selectedReport = selectedGroup?.lead ?? null;
 
   const mapCenter = useMemo(() => {
     if (selectedReport) return { lat: selectedReport.lat, lng: selectedReport.lng };
@@ -251,15 +257,18 @@ export default function MapScreen() {
     return haversineKm(responderLocation.lat, responderLocation.lng, selectedReport.lat, selectedReport.lng);
   }, [selectedReport, responderLocation]);
 
-  const handleStatusAction = async (report: EmergencyReport) => {
-    const action = nextStatusAction(report.status);
+  // Acts on every report in the group, so one Accept answers all the callers
+  // who reported the same emergency.
+  const handleStatusAction = async (group: ReportGroup<EmergencyReport>) => {
+    const action = nextStatusAction(group.lead.status);
     if (!action) return;
     setStatusError(null);
+    const ids = group.members.map((m) => m.id);
     const update: Record<string, unknown> = { status: action.next };
     if (action.next === 'responding') {
       update.responder_username = user?.username ?? null;
     }
-    const { error } = await supabase.from('reports').update(update).eq('report_id', report.id);
+    const { error } = await supabase.from('reports').update(update).in('report_id', ids);
     if (error) {
       const hint = /(status|responder_username).*column|column.*(status|responder_username)/i.test(error.message)
         ? ' Run supabase/reports-add-status.sql in the Supabase SQL Editor to add the missing columns.'
@@ -269,22 +278,23 @@ export default function MapScreen() {
       return;
     }
     if (action.next === 'resolved') {
-      setReports((prev) => prev.filter((r) => r.id !== report.id));
+      setReports((prev) => prev.filter((r) => !ids.includes(r.id)));
       setSelectedId(null);
     } else {
-      setReports((prev) => prev.map((r) => (r.id === report.id ? { ...r, status: action.next } : r)));
+      setReports((prev) => prev.map((r) => (ids.includes(r.id) ? { ...r, status: action.next } : r)));
     }
   };
 
   // Hands the incident to another responder service by changing its classification.
   // It then drops off this responder's list and appears on the new service's dashboard.
-  const handleReassign = async (report: EmergencyReport, role: RoleThemeKey) => {
+  const handleReassign = async (group: ReportGroup<EmergencyReport>, role: RoleThemeKey) => {
     setStatusError(null);
     setReassigning(true);
+    const ids = group.members.map((m) => m.id);
     const { error } = await supabase
       .from('reports')
       .update({ classified_as: defaultEmergencyTypeForRole(role) })
-      .eq('report_id', report.id);
+      .in('report_id', ids);
     setReassigning(false);
     if (error) {
       setStatusError(error.message);
@@ -292,7 +302,7 @@ export default function MapScreen() {
       return;
     }
     setReassignOpen(false);
-    setReports((prev) => prev.filter((r) => r.id !== report.id));
+    setReports((prev) => prev.filter((r) => !ids.includes(r.id)));
     setSelectedId(null);
   };
 
@@ -310,13 +320,22 @@ export default function MapScreen() {
     <View style={[styles.mapFrame, { height: mapHeight }]}>
       {isLoaded ? (
         <GoogleMap mapContainerStyle={containerStyle} center={mapCenter} zoom={selectedReport ? 16 : 13}>
-          {visibleReports.map((r) => (
+          {groups.map((g) => (
             <Marker
-              key={r.id}
-              position={{ lat: r.lat, lng: r.lng }}
-              title={emergencyTypeLabel(r.classified_as)}
-              icon={MARKER_ICON_BY_STATUS[r.status] ?? MARKER_ICON_BY_STATUS.matched}
-              onClick={() => setSelectedId(r.id)}
+              key={g.key}
+              position={{ lat: g.lat, lng: g.lng }}
+              title={
+                g.members.length > 1
+                  ? `${emergencyTypeLabel(g.lead.classified_as)} — ${g.members.length} reports in this area`
+                  : emergencyTypeLabel(g.lead.classified_as)
+              }
+              icon={MARKER_ICON_BY_STATUS[g.lead.status] ?? MARKER_ICON_BY_STATUS.matched}
+              label={
+                g.members.length > 1
+                  ? { text: String(g.members.length), color: '#FFFFFF', fontWeight: '700' }
+                  : undefined
+              }
+              onClick={() => setSelectedId(g.lead.id)}
             />
           ))}
           {responderLocation ? (
@@ -374,6 +393,12 @@ export default function MapScreen() {
             {route?.duration?.text ? <Text style={styles.etaAway}>{route.duration.text} away</Text> : null}
           </View>
           <Text style={styles.selectedDetail}>{locationText}</Text>
+          {selectedGroup && selectedGroup.members.length > 1 ? (
+            <Text style={styles.groupNote}>
+              {selectedGroup.members.length} people reported this within{' '}
+              {Math.round(PROXIMITY_RADIUS_KM * 1000)} m. Accepting responds to all of them.
+            </Text>
+          ) : null}
           {responderLocation && !responderInMakati ? (
             <Text style={styles.hintText}>Your current location is outside Makati City, so routing is unavailable.</Text>
           ) : null}
@@ -419,7 +444,7 @@ export default function MapScreen() {
                       <Pressable
                         key={role}
                         disabled={reassigning}
-                        onPress={() => handleReassign(selectedReport, role)}
+                        onPress={() => selectedGroup && handleReassign(selectedGroup, role)}
                         style={({ pressed }) => [styles.reassignOption, pressed && styles.reassignOptionPressed]}
                         accessibilityRole="button"
                         accessibilityLabel={`Reassign to ${RoleThemes[role].displayName}`}
@@ -433,7 +458,7 @@ export default function MapScreen() {
               ) : null}
             </View>
             <Pressable
-              onPress={() => handleStatusAction(selectedReport)}
+              onPress={() => selectedGroup && handleStatusAction(selectedGroup)}
               style={[styles.acceptBtn, { backgroundColor: theme.primary }]}
             >
               <Text style={styles.acceptBtnText}>Accept</Text>
@@ -468,7 +493,7 @@ export default function MapScreen() {
           {statusError ? <Text style={styles.statusErrorText}>{statusError}</Text> : null}
           {nextStatusAction(selectedReport.status) ? (
             <Pressable
-              onPress={() => handleStatusAction(selectedReport)}
+              onPress={() => selectedGroup && handleStatusAction(selectedGroup)}
               style={[styles.statusBtn, { backgroundColor: theme.primary }]}
             >
               <Text style={styles.statusBtnText}>{nextStatusAction(selectedReport.status)?.label}</Text>
@@ -481,22 +506,25 @@ export default function MapScreen() {
 
   const emergencyList = (
     <>
-      <Text style={styles.listTitle}>Active Emergencies ({visibleReports.length})</Text>
-      {visibleReports.length === 0 ? (
+      <Text style={styles.listTitle}>Active Emergencies ({groups.length})</Text>
+      {groups.length === 0 ? (
         <Text style={styles.emptyText}>No active emergencies matched to your role right now.</Text>
       ) : (
-        visibleReports.map((r) => (
+        groups.map((g) => (
           <Pressable
-            key={r.id}
-            onPress={() => setSelectedId(r.id)}
+            key={g.key}
+            onPress={() => setSelectedId(g.lead.id)}
             style={[
               styles.listCard,
               CardShadow,
-              r.id === selectedId && { borderColor: theme.primary },
+              g.members.some((m) => m.id === selectedId) && { borderColor: theme.primary },
             ]}
           >
-            <Text style={styles.listCardTitle}>{emergencyTypeLabel(r.classified_as)}</Text>
-            <Text style={styles.listCardSubtitle}>{EMERGENCY_STATUS_LABELS[r.status]}</Text>
+            <Text style={styles.listCardTitle}>{emergencyTypeLabel(g.lead.classified_as)}</Text>
+            <Text style={styles.listCardSubtitle}>
+              {EMERGENCY_STATUS_LABELS[g.lead.status]}
+              {g.members.length > 1 ? ` · ${g.members.length} reports in this area` : ''}
+            </Text>
           </Pressable>
         ))
       )}
@@ -822,6 +850,16 @@ const styles = StyleSheet.create({
     color: TEXT_SECONDARY,
     fontStyle: 'italic',
     marginBottom: Spacing.xs,
+  },
+  groupNote: {
+    fontSize: FontSizes.xs,
+    fontWeight: '600',
+    color: TEXT_PRIMARY,
+    backgroundColor: OFF_WHITE,
+    borderRadius: Radius.sm,
+    paddingVertical: Spacing.xs,
+    paddingHorizontal: Spacing.sm,
+    marginBottom: Spacing.sm,
   },
   statusErrorText: {
     fontSize: FontSizes.xs,

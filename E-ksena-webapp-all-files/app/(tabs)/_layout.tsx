@@ -7,7 +7,7 @@ import { useRoleTheme } from '@/context/role-theme';
 import { RoleBadge } from '@/components/role-badge';
 
 export default function TabLayout() {
-  const { isResponder } = useAuth();
+  const { isResponder, isAdmin } = useAuth();
   const theme = useRoleTheme();
 
   useEffect(() => {
@@ -44,6 +44,16 @@ export default function TabLayout() {
         <Drawer.Screen name="reports" options={{ title: 'Reports', drawerLabel: 'Reports' }} />
         <Drawer.Screen name="explore" options={{ title: 'Messages', drawerLabel: 'Messages' }} />
         <Drawer.Screen name="profile" options={{ title: 'Profile', drawerLabel: 'Profile' }} />
+        <Drawer.Screen
+          name="admin"
+          options={{
+            title: 'Admin',
+            drawerLabel: 'Admin',
+            // Hidden for non-admins. This is a convenience, not the security
+            // boundary -- that is enforced by Row Level Security in Supabase.
+            drawerItemStyle: { display: isAdmin ? 'flex' : 'none' },
+          }}
+        />
       </Drawer>
     </View>
   );
