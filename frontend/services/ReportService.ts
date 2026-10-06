@@ -278,37 +278,13 @@ export const sendVideoReport = async (
     console.log(`[REAL API] Response received:`, createResp);
 
     if (!createResp.success || !createResp.data) {
-      // network/backend failed — fallback to creating a local/offline report so UI can continue
       console.error(`[REAL API] ❌ BACKEND REQUEST FAILED!`);
       console.error(`[REAL API] Error was:`, createResp.error || 'Unknown error (no error message returned)');
-      console.error(`[REAL API] This is why no incident was created in the database!`);
       
-      const offlineReport: EmergencyReport = {
-        id: `local_${Date.now()}`,
-        userId: 'local_user',
-        type: 'video',
-        location,
-        timestamp: new Date().toISOString(),
-        status: 'pending',
-        mediaUri: videoUri,
-        description: 'Offline video report (created locally due to network failure)',
-      };
-
-      // create a responder route payload so HomeScreen can route to this incident
-      setPendingResponderRoute({
-        incidentId: offlineReport.id,
-        responderStart: {
-          latitude: location.latitude + 0.005,
-          longitude: location.longitude + 0.005,
-        },
-        userLocation: location,
-        dispatcherName: 'Local Responder (approx.)',
-      });
-
       return {
-        success: true,
-        report: offlineReport,
-        message: 'Report created offline. Wait for responder update.',
+        success: false,
+        report: {} as EmergencyReport,
+        message: 'Network connection failed. Please check your internet and try again.',
       };
     }
 
@@ -328,34 +304,12 @@ export const sendVideoReport = async (
     console.log(`[REAL API] Incident details response:`, incidentDetails);
 
     if (!incidentDetails.success || !incidentDetails.report) {
-      console.warn('[REAL API] ⚠️ Could not get incident details, creating offline fallback');
-      console.warn('[REAL API] Error was:', incidentDetails.message);
-      // If we can't get details, create a basic report with fallback location
-      const basicReport: EmergencyReport = {
-        id: incidentId,
-        userId: 'user',
-        type: 'video',
-        location,
-        timestamp: new Date().toISOString(),
-        status: 'pending',
-        mediaUri: videoUri,
-        description: 'Emergency video report submitted',
-      };
-
-      setPendingResponderRoute({
-        incidentId: incidentId,
-        responderStart: {
-          latitude: location.latitude + 0.01,
-          longitude: location.longitude - 0.01,
-        },
-        userLocation: location,
-        dispatcherName: 'Responder (pending assignment)',
-      });
-
+      console.warn('[REAL API] ⚠️ Could not get incident details');
+      
       return {
-        success: true,
-        report: basicReport,
-        message: createResp.data.message || 'Report submitted. Waiting for responder assignment.',
+        success: false,
+        report: {} as EmergencyReport,
+        message: 'Failed to retrieve incident details from server. Please check your internet connection.',
       };
     }
 
@@ -364,35 +318,42 @@ export const sendVideoReport = async (
     console.log('[REAL API] Assigned dispatcher:', report.assignedDispatcher);
     console.log('[REAL API] Responder base:', report.responderBase);
 
-    // Use responder base location if available; else fallback offset near user
-    const responderStart = report.responderBase
-      ? {
-          latitude: report.responderBase.latitude,
-          longitude: report.responderBase.longitude,
-        }
-      : {
-          latitude: location.latitude + 0.01,
-          longitude: location.longitude - 0.01,
-        };
+    if (report.assignedDispatcher || report.responderBase) {
+      // Use responder base location if available; else fallback offset near user
+      const responderStart = report.responderBase
+        ? {
+            latitude: report.responderBase.latitude,
+            longitude: report.responderBase.longitude,
+          }
+        : {
+            latitude: location.latitude + 0.01,
+            longitude: location.longitude - 0.01,
+          };
 
-    console.log('[REAL API] Using responder start position:', responderStart);
+      console.log('[REAL API] Using responder start position:', responderStart);
 
-    // Set pending route with responder info
-    setPendingResponderRoute({
-      incidentId: report.id,
-      responderStart,
-      userLocation: location,
-      dispatcherName: report.assignedDispatcher?.name || 'Assigned Responder',
-      dispatcherPhone: report.assignedDispatcher?.phone,
-      responderBase: report.responderBase,
-    });
+      // Set pending route with responder info
+      setPendingResponderRoute({
+        incidentId: report.id,
+        responderStart,
+        userLocation: location,
+        dispatcherName: report.assignedDispatcher?.name || 'Assigned Responder',
+        dispatcherPhone: report.assignedDispatcher?.phone,
+        responderBase: report.responderBase,
+      });
+    } else {
+      console.log('[REAL API] No responder assigned yet. Route will not be shown until dispatch.');
+    }
 
     console.log(`[REAL API] ========== VIDEO REPORT COMPLETE - INCIDENT ${report.id} CREATED ==========`);
 
+    const hasResponder = !!(report.assignedDispatcher || report.responderBase);
     return {
       success: true,
       report,
-      message: 'Emergency report submitted successfully. Responder assigned.',
+      message: hasResponder 
+        ? 'Emergency report submitted successfully. Responder assigned.'
+        : 'Emergency report submitted successfully. Waiting for dispatch.',
     };
   } catch (error) {
     console.error('[REAL API] ❌ EXCEPTION:', error);

@@ -5,8 +5,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   ActivityIndicator,
-  FlatList,
-  Modal,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -34,9 +32,7 @@ const VideoCameraScreen: React.FC = () => {
   const [cameraType, setCameraType] = useState<'back' | 'front'>('back');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   
-  const [showBucketModal, setShowBucketModal] = useState(false);
-  const [bucketVideos, setBucketVideos] = useState<Array<{name:string; path:string; publicUrl?:string}>>([]);
-  const [loadingBucket, setLoadingBucket] = useState(false);
+
 
   useEffect(() => {
     if (!camPermission?.granted) requestCam();
@@ -121,45 +117,7 @@ const VideoCameraScreen: React.FC = () => {
     }
   };
 
-  const fetchBucketVideos = async () => {
-    try {
-      setLoadingBucket(true);
-      const { data, error } = await supabase.storage.from('incident-videos').list('', { limit: 100 });
-      if (error) return;
-      if (!data || data.length === 0) return;
 
-      const mapped = (data || []).map(f => {
-        const { data: publicData } = supabase.storage.from('incident-videos').getPublicUrl(f.name);
-        return { name: f.name, path: f.name, publicUrl: publicData?.publicUrl ?? null };
-      });
-      setBucketVideos(mapped);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoadingBucket(false);
-    }
-  };
-
-  const openBucketModal = async () => {
-    setShowBucketModal(true);
-    await fetchBucketVideos();
-  };
-
-  const handleUseBucketVideo = async (videoUrl?: string) => {
-    try {
-      setShowBucketModal(false);
-      if (!videoUrl) return;
-      const { latitude, longitude, address } = state.location;
-      if (!latitude || !longitude) return Alert.alert('Error', 'No location');
-      const userPhone = state.auth.user?.phone ? String(state.auth.user.phone) : 'unknown';
-      const result = await sendVideoReport(videoUrl, { latitude, longitude, address: address ?? undefined }, userPhone, videoUrl);
-      if (result.success) {
-        Alert.alert('Report Sent', 'Bucket video used successfully', [{ text: 'OK', onPress: () => navigation.navigate('MainTabs' as any) }]);
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
 
   if (!camPermission || !micPermission) {
     return (
@@ -230,7 +188,7 @@ const VideoCameraScreen: React.FC = () => {
         <TouchableOpacity
           style={[styles.recordButton, isRecording && styles.recordButtonActive]}
           onPress={toggleRecording}
-          disabled={isRecording || isAnalyzing}
+          disabled={isAnalyzing}
         >
           {isRecording ? (
             <VideoOff size={32} color="#ffffff" />
@@ -238,49 +196,10 @@ const VideoCameraScreen: React.FC = () => {
             <VideoIcon size={32} color="#ffffff" />
           )}
         </TouchableOpacity>
-        <TouchableOpacity 
-          style={[styles.bucketButton, (isRecording || isAnalyzing) && { opacity: 0.5 }]} 
-          onPress={openBucketModal}
-          disabled={isRecording || isAnalyzing}
-        >
-          <Text style={styles.bucketButtonText}>Pick</Text>
-        </TouchableOpacity>
         <Text style={styles.instructionText}>
           {isRecording ? 'Recording emergency clip...' : 'Tap to START RECORDING'}
         </Text>
       </View>
-
-      <Modal visible={showBucketModal} animationType="slide" onRequestClose={() => setShowBucketModal(false)}>
-        <SafeAreaView style={{flex:1, backgroundColor:'#000'}}>
-          <View style={{padding:16, flexDirection:'row', justifyContent:'space-between', alignItems:'center'}}>
-            <Text style={{color:'#fff', fontSize:18}}>Select Bucket Video</Text>
-            <TouchableOpacity onPress={() => setShowBucketModal(false)}>
-              <Text style={{color:'#fff'}}>Close</Text>
-            </TouchableOpacity>
-          </View>
-          {loadingBucket ? (
-            <View style={{flex:1,justifyContent:'center',alignItems:'center'}}>
-              <ActivityIndicator size="large" color="#fff" />
-            </View>
-          ) : (
-             <FlatList
-                data={bucketVideos}
-                keyExtractor={item => item.path}
-                contentContainerStyle={{padding:16}}
-                renderItem={({item}) => (
-                  <View style={{marginBottom:12, backgroundColor:'rgba(255,255,255,0.04)', padding:12, borderRadius:8}}>
-                    <Text style={{color:'#fff', marginBottom:8}} numberOfLines={1}>{item.name}</Text>
-                    <View style={{flexDirection:'row', justifyContent:'flex-end'}}>
-                      <TouchableOpacity style={{paddingHorizontal:12, paddingVertical:8, backgroundColor:'#2563eb', borderRadius:6}} onPress={() => handleUseBucketVideo(item.publicUrl || undefined)}>
-                        <Text style={{color:'#fff'}}>Use</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
-              />
-          )}
-        </SafeAreaView>
-      </Modal>
     </SafeAreaView>
   );
 };
@@ -309,8 +228,6 @@ const styles = StyleSheet.create({
   recordButton: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#dc2626', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
   recordButtonActive: { backgroundColor: '#ef4444' },
   instructionText: { color: '#ffffff', fontSize: 16, textAlign: 'center', opacity: 0.9 },
-  bucketButton: { position: 'absolute', right: 24, top: -10, backgroundColor: '#374151', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8 },
-  bucketButtonText: { color: '#fff', fontWeight: '600' },
 });
 
 export default VideoCameraScreen;
