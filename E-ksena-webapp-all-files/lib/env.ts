@@ -20,3 +20,9 @@ if (missing.length > 0) {
 export const SUPABASE_URL = REQUIRED_VARS.EXPO_PUBLIC_SUPABASE_URL as string;
 export const SUPABASE_ANON_KEY = REQUIRED_VARS.EXPO_PUBLIC_SUPABASE_ANON_KEY as string;
 export const GOOGLE_MAPS_API_KEY = REQUIRED_VARS.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY as string;
+
+// Backend API — optional vars with safe local fallbacks so missing values never crash the app.
+// In production these MUST be set in Render's environment variables.
+export const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3000';
+export const API_KEY = process.env.EXPO_PUBLIC_API_KEY ?? '';
+
