@@ -122,6 +122,7 @@ const HomeScreen: React.FC = () => {
       {/* Google Map */}
       <MapView
         style={styles.map}
+        provider="google"
         region={{
           latitude: mapCenter[1],
           longitude: mapCenter[0],
