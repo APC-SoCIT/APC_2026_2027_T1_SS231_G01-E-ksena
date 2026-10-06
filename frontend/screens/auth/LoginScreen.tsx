@@ -107,34 +107,30 @@ const LoginScreen: React.FC = () => {
               </View>
             </View>
 
-            {step === 'otp' && (
-              <>
-                <View style={styles.inputContainer}>
-                  <View style={styles.inputWrapper}>
-                    <Lock size={20} color="#6b7280" style={styles.inputIcon} />
-                    <TextInput
-                      style={styles.input}
-                      placeholder="OTP"
-                      placeholderTextColor="#9ca3af"
-                      value={otpCode}
-                      onChangeText={setOtpCode}
-                      keyboardType="number-pad"
-                      maxLength={6}
-                    />
-                  </View>
-                </View>
+            <View style={styles.inputContainer}>
+              <View style={styles.inputWrapper}>
+                <Lock size={20} color="#6b7280" style={styles.inputIcon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="OTP"
+                  placeholderTextColor="#9ca3af"
+                  value={otpCode}
+                  onChangeText={setOtpCode}
+                  keyboardType="number-pad"
+                  maxLength={6}
+                />
+              </View>
+            </View>
 
-                <TouchableOpacity
-                  style={[styles.loginButton, (isLoading || !otpCode.trim()) && styles.loginButtonDisabled]}
-                  onPress={handleVerifyOtp}
-                  disabled={isLoading || !otpCode.trim()}
-                >
-                  <Text style={styles.loginButtonText}>
-                    {isLoading ? 'Verifying...' : 'Login'}
-                  </Text>
-                </TouchableOpacity>
-              </>
-            )}
+            <TouchableOpacity
+              style={[styles.loginButton, (isLoading || !otpCode.trim()) && styles.loginButtonDisabled]}
+              onPress={handleVerifyOtp}
+              disabled={isLoading || !otpCode.trim()}
+            >
+              <Text style={styles.loginButtonText}>
+                {isLoading && step === 'otp' ? 'Verifying...' : 'Login'}
+              </Text>
+            </TouchableOpacity>
             
             {step === 'otp' && !state.auth.error && (
               <Text style={styles.successText}>Code sent! Please check your email.</Text>
