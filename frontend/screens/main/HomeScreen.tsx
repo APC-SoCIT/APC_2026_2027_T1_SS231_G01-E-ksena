@@ -7,16 +7,13 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import MapboxGL from '@rnmapbox/maps';
+import MapView, { Marker, Polyline } from 'react-native-maps';
 import { getDirections } from '../../services/mapbox';
 import { Phone, MessageSquare, Video, Zap } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useAuth } from '../../context/AuthContext';
 import { consumePendingResponderRoute } from '../../services/ReportService';
 import Constants from 'expo-constants';
-
-const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_TOKEN as string;
-MapboxGL.setAccessToken(MAPBOX_TOKEN);
 
 interface ResponderData {
   incidentId: string;
@@ -122,73 +119,71 @@ const HomeScreen: React.FC = () => {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Mapbox Map */}
-      <MapboxGL.MapView style={styles.map}>
-        <MapboxGL.Camera
-          centerCoordinate={mapCenter}
-          zoomLevel={12}
-          animationMode="flyTo"
-          animationDuration={500}
-        />
-
+      {/* Google Map */}
+      <MapView
+        style={styles.map}
+        region={{
+          latitude: mapCenter[1],
+          longitude: mapCenter[0],
+          latitudeDelta: 0.05,
+          longitudeDelta: 0.05,
+        }}
+      >
         {/* User location marker */}
-        <MapboxGL.PointAnnotation id="user-location" coordinate={userCoordinate}>
+        <Marker coordinate={{ latitude: userCoordinate[1], longitude: userCoordinate[0] }}>
           <View style={styles.userMarker}>
             <View style={styles.markerDot} />
           </View>
-        </MapboxGL.PointAnnotation>
+        </Marker>
 
         {/* Responder markers and route */}
         {responderData && (
           <>
-            <MapboxGL.PointAnnotation
-              id="responder-location"
-              coordinate={[
-                responderData.responderLocation.longitude,
-                responderData.responderLocation.latitude,
-              ]}
+            <Marker
+              coordinate={{
+                latitude: responderData.responderLocation.latitude,
+                longitude: responderData.responderLocation.longitude,
+              }}
             >
               <View style={styles.responderMarker}>
                 <View style={styles.markerDot} />
               </View>
-            </MapboxGL.PointAnnotation>
+            </Marker>
 
             {responderData.responderBase && (
-              <MapboxGL.PointAnnotation
-                id="responder-base"
-                coordinate={[
-                  responderData.responderBase.longitude,
-                  responderData.responderBase.latitude,
-                ]}
+              <Marker
+                coordinate={{
+                  latitude: responderData.responderBase.latitude,
+                  longitude: responderData.responderBase.longitude,
+                }}
               >
                 <View style={styles.baseMarker}>
                   <View style={styles.markerDot} />
                 </View>
-              </MapboxGL.PointAnnotation>
+              </Marker>
             )}
 
-            <MapboxGL.ShapeSource
-              id="route-line"
-              shape={{
-                type: 'Feature',
-                geometry: {
-                  type: 'LineString',
-                  coordinates: routeCoordinates || [
-                    [responderData.userLocation.longitude, responderData.userLocation.latitude],
-                    [responderData.responderLocation.longitude, responderData.responderLocation.latitude],
-                  ],
-                },
-                properties: {},
-              }}
-            >
-              <MapboxGL.LineLayer
-                id="route-layer"
-                style={{ lineColor: '#3b82f6', lineWidth: 4, lineJoin: 'round', lineCap: 'round' }}
-              />
-            </MapboxGL.ShapeSource>
+            <Polyline
+              coordinates={
+                routeCoordinates
+                  ? routeCoordinates.map(c => ({ latitude: c[1], longitude: c[0] }))
+                  : [
+                      {
+                        latitude: responderData.userLocation.latitude,
+                        longitude: responderData.userLocation.longitude,
+                      },
+                      {
+                        latitude: responderData.responderLocation.latitude,
+                        longitude: responderData.responderLocation.longitude,
+                      },
+                    ]
+              }
+              strokeColor="#3b82f6"
+              strokeWidth={4}
+            />
           </>
         )}
-      </MapboxGL.MapView>
+      </MapView>
 
       {/* Overlay Controls */}
       <View style={styles.controlsOverlay}>
