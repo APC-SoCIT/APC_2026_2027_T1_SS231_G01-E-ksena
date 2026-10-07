@@ -5,9 +5,20 @@ import { PrimaryButton } from '@/components/primary-button';
 import { Spacing, FontSizes, BRAND_RED, BRAND_RED_HOVER, TEXT_PRIMARY, TEXT_SECONDARY, WHITE, OFF_WHITE, BORDER, Radius, CardShadow, DANGER_BG, DANGER_BORDER, getRoleTheme } from '@/constants/theme';
 import type { RoleThemeKey } from '@/constants/theme';
 import { signUpResponder } from '@/lib/auth-service';
+import { PhoneInput, toE164, isValidPhone } from '@/components/phone-input';
 
-const MIN_PASSWORD_LENGTH = 6;
+const MIN_PASSWORD_LENGTH = 8;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function passwordProblems(value: string): string[] {
+  const missing: string[] = [];
+  if (value.length < MIN_PASSWORD_LENGTH) missing.push(`at least ${MIN_PASSWORD_LENGTH} characters`);
+  if (!/[A-Z]/.test(value)) missing.push('an uppercase letter');
+  if (!/[a-z]/.test(value)) missing.push('a lowercase letter');
+  if (!/\d/.test(value)) missing.push('a number');
+  if (!/[^A-Za-z0-9]/.test(value)) missing.push('a special character');
+  return missing;
+}
 
 const ROLES: { key: RoleThemeKey; label: string }[] = [
   { key: 'police', label: 'Police' },
@@ -34,7 +45,7 @@ export default function SignupScreen() {
     const e = email.trim();
     const p = password;
     const name = fullName.trim();
-    const ph = phone.trim();
+    const ph = toE164(phone);
 
     if (!u) {
       setError('Username is required.');
@@ -52,12 +63,17 @@ export default function SignupScreen() {
       setError('Phone number is required.');
       return;
     }
+    if (!isValidPhone(phone)) {
+      setError('Enter a valid phone number.');
+      return;
+    }
     if (!p) {
       setError('Password is required.');
       return;
     }
-    if (p.length < MIN_PASSWORD_LENGTH) {
-      setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+    const missing = passwordProblems(p);
+    if (missing.length > 0) {
+      setError(`Password needs ${missing.join(', ')}.`);
       return;
     }
 
@@ -107,7 +123,7 @@ export default function SignupScreen() {
             style={styles.input}
             value={fullName}
             onChangeText={setFullName}
-            placeholder="Juan Dela Cruz"
+            placeholder="Your Full Name"
             placeholderTextColor={TEXT_SECONDARY}
           />
 
@@ -116,7 +132,7 @@ export default function SignupScreen() {
             style={styles.input}
             value={username}
             onChangeText={setUsername}
-            placeholder="Choose a username"
+            placeholder="Username"
             placeholderTextColor={TEXT_SECONDARY}
             autoCapitalize="none"
           />
@@ -126,47 +142,44 @@ export default function SignupScreen() {
             style={styles.input}
             value={email}
             onChangeText={setEmail}
-            placeholder="your@email.com"
+            placeholder="Email"
             placeholderTextColor={TEXT_SECONDARY}
             keyboardType="email-address"
             autoCapitalize="none"
           />
 
           <Text style={styles.label}>Phone number</Text>
-          <TextInput
-            style={styles.input}
-            value={phone}
-            onChangeText={setPhone}
-            placeholder="09XXXXXXXXX"
-            placeholderTextColor={TEXT_SECONDARY}
-            keyboardType="phone-pad"
-          />
+          <PhoneInput value={phone} onChange={setPhone} />
 
           <Text style={styles.label}>Password</Text>
           <TextInput
-            style={styles.input}
+            style={styles.passwordInput}
             value={password}
             onChangeText={setPassword}
-            placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
+            placeholder="Password"
             placeholderTextColor={TEXT_SECONDARY}
             secureTextEntry
           />
+          <Text style={styles.hint}>
+            At least {MIN_PASSWORD_LENGTH} characters, with an uppercase letter, a lowercase letter, a number and a
+            special character.
+          </Text>
 
-          <Text style={styles.label}>Rank / Position (optional)</Text>
+          <Text style={styles.label}>Rank</Text>
           <TextInput
             style={styles.input}
             value={rank}
             onChangeText={setRank}
-            placeholder="e.g. Patrol Officer"
+            placeholder="Rank"
             placeholderTextColor={TEXT_SECONDARY}
           />
 
-          <Text style={styles.label}>Office / Station (optional)</Text>
+          <Text style={styles.label}>Office</Text>
           <TextInput
             style={styles.input}
             value={office}
             onChangeText={setOffice}
-            placeholder="e.g. Makati Police Station 1"
+            placeholder="Office"
             placeholderTextColor={TEXT_SECONDARY}
           />
 
@@ -270,6 +283,23 @@ const styles = StyleSheet.create({
     color: TEXT_PRIMARY,
     backgroundColor: WHITE,
     marginBottom: Spacing.md,
+  },
+  passwordInput: {
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    fontSize: FontSizes.body,
+    color: TEXT_PRIMARY,
+    backgroundColor: WHITE,
+    marginBottom: Spacing.xs,
+  },
+  hint: {
+    fontSize: FontSizes.xs,
+    color: TEXT_SECONDARY,
+    marginBottom: Spacing.md,
+    lineHeight: 16,
   },
   roleRow: {
     flexDirection: 'row',
