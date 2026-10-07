@@ -14,7 +14,7 @@ function RootStack() {
 
   return (
     <Stack screenOptions={headerOptions}>
-      <Stack.Screen name="index" options={{ title: 'Responder log in', headerShown: true }} />
+      <Stack.Screen name="index" options={{ title: 'Responder log in', headerShown: false }} />
       <Stack.Screen name="signup" options={{ title: 'Responder registration', headerShown: true }} />
       <Stack.Screen name="verify" options={{ title: 'Verify email', headerShown: true }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />

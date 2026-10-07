@@ -8,7 +8,9 @@ import {
   Platform,
   ScrollView,
   Pressable,
+  useWindowDimensions,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, Link, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { PrimaryButton } from '@/components/primary-button';
@@ -31,6 +33,15 @@ import {
 } from '@/constants/theme';
 import { signInResponder } from '@/lib/auth-service';
 
+const FEATURES: { icon: keyof typeof Ionicons.glyphMap; text: string }[] = [
+  { icon: 'map-outline', text: 'Live emergency map for Makati City' },
+  { icon: 'git-branch-outline', text: 'Incidents matched to your service' },
+  { icon: 'navigate-outline', text: 'Turn-by-turn navigation to the scene' },
+  { icon: 'videocam-outline', text: 'Live video from the caller' },
+];
+
+const WIDE_BREAKPOINT = 900;
+
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -40,6 +51,8 @@ export default function LoginScreen() {
   const router = useRouter();
   const { registered } = useLocalSearchParams<{ registered?: string }>();
   const showRegisteredMessage = registered === '1';
+  const { width } = useWindowDimensions();
+  const wide = width >= WIDE_BREAKPOINT;
 
   const handleLogin = async () => {
     setError(null);
@@ -73,13 +86,40 @@ export default function LoginScreen() {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.hero}>
-          <Text style={styles.logo}>E-ksena</Text>
-          <Text style={styles.tagline}>Incident Reporting &amp; Response System</Text>
-        </View>
+        <View style={[styles.shell, wide && styles.shellWide]}>
+          <LinearGradient
+            colors={['#B5362B', '#92241C', '#6E1813']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={[styles.brandPanel, wide ? styles.brandPanelWide : styles.brandPanelNarrow]}
+          >
+            <View style={styles.brandMarkRow}>
+              <View style={styles.brandMark}>
+                <Ionicons name="shield-checkmark" size={wide ? 24 : 20} color={WHITE} />
+              </View>
+              <Text style={[styles.logo, !wide && styles.logoNarrow]}>E-ksena</Text>
+            </View>
+            <Text style={[styles.tagline, !wide && styles.taglineNarrow]}>
+              Incident Reporting &amp; Response System
+            </Text>
 
-        <View style={[styles.card, CardShadow]}>
-          <Text style={styles.cardTitle}>Responder log in</Text>
+            {wide ? (
+              <>
+                <View style={styles.featureList}>
+                  {FEATURES.map((f) => (
+                    <View key={f.text} style={styles.featureRow}>
+                      <Ionicons name={f.icon} size={17} color="rgba(255,255,255,0.8)" />
+                      <Text style={styles.featureText}>{f.text}</Text>
+                    </View>
+                  ))}
+                </View>
+                <Text style={styles.brandFooter}>Asia Pacific College &middot; Group ALT_RUN</Text>
+              </>
+            ) : null}
+          </LinearGradient>
+
+          <View style={[styles.card, wide ? styles.cardWide : styles.cardNarrow]}>
+            <Text style={styles.cardTitle}>Responder Signup</Text>
 
           {showRegisteredMessage ? (
             <View style={styles.successBox}>
@@ -127,13 +167,14 @@ export default function LoginScreen() {
             hoverColor={BRAND_RED_HOVER}
           />
 
-          <View style={styles.footer}>
-            <Text style={styles.footerText}>Don&apos;t have an account? </Text>
-            <Link href="/signup" asChild>
-              <Pressable hitSlop={8}>
-                <Text style={styles.link}>Registration</Text>
-              </Pressable>
-            </Link>
+            <View style={styles.footer}>
+              <Text style={styles.footerText}>Don&apos;t have an account? </Text>
+              <Link href="/signup" asChild>
+                <Pressable hitSlop={8}>
+                  <Text style={styles.link}>Registration</Text>
+                </Pressable>
+              </Link>
+            </View>
           </View>
         </View>
       </ScrollView>
@@ -148,38 +189,105 @@ const styles = StyleSheet.create({
   },
   scroll: {
     flexGrow: 1,
+    justifyContent: 'center',
     padding: Spacing.lg,
-    paddingTop: Spacing.xl * 2,
-    paddingBottom: Spacing.xl,
+    paddingVertical: Spacing.xl,
   },
-  hero: {
+  shell: {
+    width: '100%',
+    maxWidth: 420,
+    alignSelf: 'center',
+    borderRadius: 20,
+    overflow: 'hidden',
+    backgroundColor: WHITE,
+    shadowColor: '#1C2126',
+    shadowOpacity: 0.1,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 6,
+  },
+  shellWide: {
+    flexDirection: 'row',
+    maxWidth: 900,
+    minHeight: 520,
+  },
+  brandPanel: {
+    justifyContent: 'center',
+  },
+  brandPanelWide: {
+    flex: 1,
+    padding: Spacing.xl * 1.5,
+  },
+  brandPanelNarrow: {
+    paddingVertical: Spacing.xl,
+    paddingHorizontal: Spacing.xl,
     alignItems: 'center',
-    marginBottom: Spacing.xl,
+  },
+  brandMarkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  brandMark: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.16)',
   },
   logo: {
-    fontSize: 26,
+    fontSize: 30,
     fontWeight: '700',
-    color: BRAND_RED,
-    letterSpacing: -0.3,
+    color: WHITE,
+    letterSpacing: -0.5,
+  },
+  logoNarrow: {
+    fontSize: 25,
   },
   tagline: {
     fontSize: FontSizes.sm,
-    color: TEXT_SECONDARY,
-    marginTop: Spacing.xs,
+    color: 'rgba(255,255,255,0.78)',
+    marginTop: Spacing.sm,
+    lineHeight: 20,
+  },
+  taglineNarrow: {
+    textAlign: 'center',
+  },
+  featureList: {
+    marginTop: Spacing.xl,
+    gap: Spacing.md,
+  },
+  featureRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  featureText: {
+    flex: 1,
+    fontSize: FontSizes.sm,
+    color: 'rgba(255,255,255,0.9)',
+    lineHeight: 19,
+  },
+  brandFooter: {
+    marginTop: Spacing.xl * 1.5,
+    fontSize: FontSizes.xs,
+    color: 'rgba(255,255,255,0.55)',
   },
   card: {
     backgroundColor: WHITE,
-    borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: Radius.lg,
+    justifyContent: 'center',
+  },
+  cardWide: {
+    flex: 1,
+    padding: Spacing.xl * 1.5,
+  },
+  cardNarrow: {
     padding: Spacing.xl,
-    maxWidth: 400,
-    width: '100%',
-    alignSelf: 'center',
   },
   cardTitle: {
     fontSize: FontSizes.title,
-    fontWeight: '600',
+    fontWeight: '700',
     color: TEXT_PRIMARY,
     marginBottom: Spacing.lg,
   },
