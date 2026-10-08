@@ -31,7 +31,8 @@ const STATUS_LABELS: Record<ConnectionState, string> = {
 type SignalPayload =
   | { type: 'offer'; offer: RTCSessionDescriptionInit; sender: string }
   | { type: 'answer'; answer: RTCSessionDescriptionInit; sender: string }
-  | { type: 'candidate'; candidate: RTCIceCandidateInit; sender: string };
+  | { type: 'candidate'; candidate: RTCIceCandidateInit; sender: string }
+  | { type: 'ready'; sender: string };
 
 export function ResponderVideoPlayer({ incidentId }: { incidentId?: string | null }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -137,6 +138,10 @@ export function ResponderVideoPlayer({ incidentId }: { incidentId?: string | nul
     channel.subscribe((status) => {
       if (status !== 'SUBSCRIBED' || cancelled) return;
       subscribed = true;
+      // The caller sends its offer once, the moment it joins. A responder who
+      // opens the incident after that would have missed it -- broadcast messages
+      // are not replayed -- so announce ourselves and let the caller re-offer.
+      sendSignal({ type: 'ready', sender: 'responder' });
       for (const candidate of outgoingCandidates.splice(0)) {
         sendSignal({ type: 'candidate', candidate, sender: 'responder' });
       }
