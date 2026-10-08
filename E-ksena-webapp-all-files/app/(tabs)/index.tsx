@@ -217,7 +217,14 @@ export default function MapScreen() {
     })();
     return () => {
       cancelled = true;
-      subscription?.remove();
+      try {
+        // expo-location 19.0.8 unregisters via LocationEventEmitter.removeSubscription,
+        // which this React Native version no longer provides. It stops the watch before
+        // that call, so swallowing the throw only leaves one idle (reused) listener.
+        subscription?.remove();
+      } catch {
+        // nothing further to clean up
+      }
     };
   }, []);
 

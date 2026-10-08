@@ -34,7 +34,7 @@ export default function SignupScreen() {
   const [phone, setPhone] = useState('');
   const [rank, setRank] = useState('');
   const [office, setOffice] = useState('');
-  const [role, setRole] = useState<RoleThemeKey>('firefighter');
+  const [role, setRole] = useState<RoleThemeKey | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const router = useRouter();
@@ -74,6 +74,10 @@ export default function SignupScreen() {
     const missing = passwordProblems(p);
     if (missing.length > 0) {
       setError(`Password needs ${missing.join(', ')}.`);
+      return;
+    }
+    if (!role) {
+      setError('Select your role.');
       return;
     }
 
@@ -191,7 +195,7 @@ export default function SignupScreen() {
               return (
                 <Pressable
                   key={r.key}
-                  onPress={() => setRole(r.key)}
+                  onPress={() => { setRole(r.key); setError(null); }}
                   style={[styles.roleBtn, isActive && { borderColor: roleColor, backgroundColor: OFF_WHITE }]}
                 >
                   <Text style={[styles.roleBtnText, isActive && { color: roleColor, fontWeight: '600' }]}>{r.label}</Text>
