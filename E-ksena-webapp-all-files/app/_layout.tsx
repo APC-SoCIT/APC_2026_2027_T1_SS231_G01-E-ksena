@@ -23,7 +23,12 @@ function RootStack() {
         <Stack.Screen name="index" options={{ title: 'Responder log in', headerShown: false }} />
         <Stack.Screen name="signup" options={{ title: 'Responder registration', headerShown: true }} />
         <Stack.Screen name="verify" options={{ title: 'Verify email', headerShown: true }} />
+        <Stack.Screen name="forgot-password" options={{ title: 'Forgot password', headerShown: false }} />
       </Stack.Protected>
+      {/* Outside both guards on purpose: the recovery link signs the responder
+          in, so a signed-out-only guard would remove this screen underneath
+          them and send them to the dashboard without setting a password. */}
+      <Stack.Screen name="reset-password" options={{ title: 'Set a new password', headerShown: false }} />
       <Stack.Protected guard={isResponder}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Details' }} />

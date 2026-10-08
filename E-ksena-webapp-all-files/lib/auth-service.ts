@@ -72,8 +72,57 @@ export async function resendSignupOtp(email: string): Promise<void> {
 export async function signInResponder(email: string, password: string): Promise<void> {
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) throw error;
-
   if (data.user) await upsertResponderRecord(data.user);
+}
+
+/**
+ * The page Supabase sends a recovery link back to. It must also be listed under
+ * Authentication > URL Configuration in the Supabase dashboard, or the link is
+ * rejected and the responder lands on the site root with no session.
+ */
+function passwordResetRedirect(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  return `${window.location.origin}/reset-password`;
+}
+
+export async function sendPasswordReset(email: string): Promise<void> {
+  const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+    redirectTo: passwordResetRedirect(),
+  });
+  if (error) throw error;
+}
+
+/**
+ * Sets a new password using the short-lived session the recovery link creates.
+ * No current password is asked for here - possession of the emailed link is the
+ * proof, which is why that link has to stay single-use and short-lived.
+ */
+export async function completePasswordReset(newPassword: string): Promise<void> {
+  const { data, error: sessionError } = await supabase.auth.getSession();
+  if (sessionError) throw sessionError;
+  if (!data.session) {
+    throw new Error('This reset link has expired or has already been used. Request a new one.');
+  }
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) throw error;
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const { data, error: userError } = await supabase.auth.getUser();
+  if (userError) throw userError;
+  const email = data.user?.email;
+  if (!email) throw new Error('No signed-in account was found.');
+
+  // Re-authenticate first. updateUser alone would let anyone with an unlocked
+  // session set a new password without knowing the old one.
+  const { error: reauthError } = await supabase.auth.signInWithPassword({
+    email,
+    password: currentPassword,
+  });
+  if (reauthError) throw new Error('Your current password is incorrect.');
+
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) throw error;
 }
 
 export async function signOutResponder(): Promise<void> {

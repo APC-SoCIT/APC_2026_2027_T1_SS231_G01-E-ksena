@@ -28,6 +28,8 @@ import {
 } from '@/constants/theme';
 import { MAKATI_CENTER, isWithinMakati, haversineKm } from '@/lib/makati';
 import { GOOGLE_MAPS_API_KEY } from '@/lib/env';
+import { PrimaryButton } from '@/components/primary-button';
+import { recordDispatchAction } from '@/lib/audit';
 import { ResponderVideoPlayer } from '@/components/responder-video-player';
 import {
   getEmergencyTypesForRole,
@@ -284,6 +286,24 @@ export default function MapScreen() {
       Alert.alert('Could not update status', error.message + hint);
       return;
     }
+    const auditError = await recordDispatchAction(
+      {
+        action: 'status_change',
+        previousValue: group.lead.status,
+        newValue: action.next,
+        reportIds: ids,
+        detail: {
+          incident_id: group.lead.incidentId,
+          emergency_type: group.lead.classified_as ?? null,
+          grouped_reports: ids.length,
+        },
+      },
+      { username: user?.username, role: user?.role }
+    );
+    if (auditError) {
+      setStatusError(`Status saved, but it was not recorded in the audit log: ${auditError}`);
+    }
+
     if (action.next === 'resolved') {
       setReports((prev) => prev.filter((r) => !ids.includes(r.id)));
       setSelectedId(null);
@@ -308,6 +328,21 @@ export default function MapScreen() {
       Alert.alert('Could not change responder type', error.message);
       return;
     }
+
+    const auditError = await recordDispatchAction(
+      {
+        action: 'reassign',
+        previousValue: group.lead.classified_as ?? null,
+        newValue: defaultEmergencyTypeForRole(role),
+        reportIds: ids,
+        detail: { to_role: role, incident_id: group.lead.incidentId, grouped_reports: ids.length },
+      },
+      { username: user?.username, role: user?.role }
+    );
+    if (auditError) {
+      setStatusError(`Reassignment saved, but it was not recorded in the audit log: ${auditError}`);
+    }
+
     setReassignOpen(false);
     setReports((prev) => prev.filter((r) => !ids.includes(r.id)));
     setSelectedId(null);
@@ -547,6 +582,7 @@ export default function MapScreen() {
         <View style={[styles.card, CardShadow, styles.errorCard]}>
           <Text style={styles.errorText}>Could not load reports: {fetchError}</Text>
           <Text style={styles.errorHint}>Check the connection and try again.</Text>
+          <PrimaryButton title="Retry" onPress={fetchReports} style={styles.retryBtn} />
         </View>
       ) : null}
 
@@ -851,6 +887,9 @@ const styles = StyleSheet.create({
     fontSize: FontSizes.sm,
     color: TEXT_SECONDARY,
     marginTop: Spacing.sm,
+  },
+  retryBtn: {
+    marginTop: Spacing.md,
   },
   hintText: {
     fontSize: FontSizes.xs,
