@@ -83,6 +83,11 @@ const MainStack: React.FC = () => {
       }}
     >
       <Stack.Screen name="MainTabs" component={MainTabs} />
+      <Stack.Screen 
+        name="CallScreen" 
+        component={require('../screens/main/CallScreen').default}
+        options={{ presentation: 'fullScreenModal' }} 
+      />
     </Stack.Navigator>
   );
 };

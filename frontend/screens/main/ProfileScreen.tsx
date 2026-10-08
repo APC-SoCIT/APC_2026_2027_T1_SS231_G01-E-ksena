@@ -1,10 +1,11 @@
 import { Calendar, Edit3, LogOut, Mail, Phone, User } from 'lucide-react-native';
-import React from 'react';
+import React, { useState } from 'react';
 import {
     Alert,
     ScrollView,
     StyleSheet,
     Text,
+    TextInput,
     TouchableOpacity,
     View,
 } from 'react-native';
@@ -32,12 +33,43 @@ const ProfileScreen: React.FC = () => {
     );
   };
 
+  const [isEditing, setIsEditing] = useState(false);
+  const [editName, setEditName] = useState(user?.name || '');
+  const [editPhone, setEditPhone] = useState(user?.phone || '');
+  const [isSaving, setIsSaving] = useState(false);
+
   const handleEditProfile = () => {
-    Alert.alert(
-      'Edit Profile',
-      'This feature will be available in a future update.',
-      [{ text: 'OK' }]
-    );
+    setIsEditing(true);
+  };
+
+  const saveProfile = async () => {
+    if (!user) return;
+    setIsSaving(true);
+    try {
+      const { supabase } = await import('../../services/supabaseClient');
+      const { error } = await supabase
+        .from('users')
+        .update({ 
+          full_name: editName,
+          user_phone_number: editPhone 
+        })
+        .eq('email', user.email);
+
+      if (error) throw error;
+      
+      // Update local state (this is a bit hacky without a proper context update, 
+      // but it works for immediately reflecting the change on the screen)
+      user.name = editName;
+      user.phone = editPhone;
+      
+      setIsEditing(false);
+      Alert.alert('Success', 'Profile updated successfully!');
+    } catch (err: any) {
+      console.error(err);
+      Alert.alert('Error', 'Failed to update profile: ' + err.message);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   if (!user) {
@@ -70,7 +102,16 @@ const ProfileScreen: React.FC = () => {
             </View>
             <View style={styles.detailContent}>
               <Text style={styles.detailLabel}>Full Name</Text>
-              <Text style={styles.detailValue}>{user.name}</Text>
+              {isEditing ? (
+                <TextInput
+                  style={styles.input}
+                  value={editName}
+                  onChangeText={setEditName}
+                  placeholder="Enter your full name"
+                />
+              ) : (
+                <Text style={styles.detailValue}>{user.name}</Text>
+              )}
             </View>
           </View>
 
@@ -80,21 +121,29 @@ const ProfileScreen: React.FC = () => {
             </View>
             <View style={styles.detailContent}>
               <Text style={styles.detailLabel}>Email Address</Text>
-              <Text style={styles.detailValue}>{user.email}</Text>
+              <Text style={styles.detailValue}>{user.email} (Uneditable)</Text>
             </View>
           </View>
 
-          {user.phone && (
-            <View style={styles.detailItem}>
-              <View style={styles.detailIcon}>
-                <Phone size={20} color="#6b7280" />
-              </View>
-              <View style={styles.detailContent}>
-                <Text style={styles.detailLabel}>Phone Number</Text>
-                <Text style={styles.detailValue}>{user.phone}</Text>
-              </View>
+          <View style={styles.detailItem}>
+            <View style={styles.detailIcon}>
+              <Phone size={20} color="#6b7280" />
             </View>
-          )}
+            <View style={styles.detailContent}>
+              <Text style={styles.detailLabel}>Phone Number</Text>
+              {isEditing ? (
+                <TextInput
+                  style={styles.input}
+                  value={editPhone}
+                  onChangeText={setEditPhone}
+                  placeholder="Enter your phone number"
+                  keyboardType="phone-pad"
+                />
+              ) : (
+                <Text style={styles.detailValue}>{user.phone || 'Not provided'}</Text>
+              )}
+            </View>
+          </View>
 
           {user.dateOfBirth && (
             <View style={styles.detailItem}>
@@ -112,19 +161,41 @@ const ProfileScreen: React.FC = () => {
         <View style={styles.actionsContainer}>
           <Text style={styles.sectionTitle}>Account Actions</Text>
           
-          <TouchableOpacity style={styles.actionButton} onPress={handleEditProfile}>
-            <View style={styles.actionIcon}>
-              <Edit3 size={20} color="#dc2626" />
-            </View>
-            <Text style={styles.actionText}>Edit Profile</Text>
-          </TouchableOpacity>
+          {isEditing ? (
+            <>
+              <TouchableOpacity style={styles.actionButton} onPress={saveProfile} disabled={isSaving}>
+                <View style={styles.actionIcon}>
+                  <Edit3 size={20} color="#059669" />
+                </View>
+                <Text style={[styles.actionText, { color: '#059669' }]}>
+                  {isSaving ? 'Saving...' : 'Save Profile'}
+                </Text>
+              </TouchableOpacity>
 
-          <TouchableOpacity style={[styles.actionButton, styles.logoutButton]} onPress={handleLogout}>
-            <View style={styles.actionIcon}>
-              <LogOut size={20} color="#dc2626" />
-            </View>
-            <Text style={styles.actionText}>Logout</Text>
-          </TouchableOpacity>
+              <TouchableOpacity style={styles.actionButton} onPress={() => setIsEditing(false)}>
+                <View style={styles.actionIcon}>
+                  <LogOut size={20} color="#6b7280" />
+                </View>
+                <Text style={[styles.actionText, { color: '#6b7280' }]}>Cancel</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <TouchableOpacity style={styles.actionButton} onPress={handleEditProfile}>
+              <View style={styles.actionIcon}>
+                <Edit3 size={20} color="#dc2626" />
+              </View>
+              <Text style={styles.actionText}>Edit Profile</Text>
+            </TouchableOpacity>
+          )}
+
+          {!isEditing && (
+            <TouchableOpacity style={[styles.actionButton, styles.logoutButton]} onPress={handleLogout}>
+              <View style={styles.actionIcon}>
+                <LogOut size={20} color="#dc2626" />
+              </View>
+              <Text style={styles.actionText}>Logout</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         <View style={styles.footer}>
@@ -215,6 +286,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#111827',
     fontWeight: '500',
+  },
+  input: {
+    fontSize: 16,
+    color: '#111827',
+    fontWeight: '500',
+    borderBottomWidth: 1,
+    borderBottomColor: '#dc2626',
+    paddingVertical: 4,
+    marginTop: -4,
   },
   actionsContainer: {
     backgroundColor: '#ffffff',

@@ -4,7 +4,7 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
-const PUBLIC_ENV_URL = (typeof process !== 'undefined' ? (process as any).env?.EXPO_PUBLIC_API_BASE_URL : undefined) as string | undefined;
+const PUBLIC_ENV_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
 
 const EXPO_CONFIG_URL = (Constants?.expoConfig as any)?.extra?.API_BASE_URL as string | undefined;
 const MANIFEST_URL = (Constants?.manifest as any)?.extra?.API_BASE_URL as string | undefined;
@@ -62,7 +62,7 @@ class ApiClient {
   ): Promise<ApiResponse<T>> {
     const url = `${this.baseURL}${endpoint}`;
     console.log(`[API CLIENT] Making ${options.method || 'GET'} request to: ${url}`);
-    
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(options.headers as Record<string, string>),
@@ -94,7 +94,7 @@ class ApiClient {
       return { success: true, data };
     } catch (error) {
       let message = 'Unknown error occurred';
-      
+
       if ((error as any)?.name === 'AbortError') {
         message = 'Request timed out after 30 seconds';
       } else if (error instanceof TypeError && error.message.includes('Network request failed')) {
@@ -102,11 +102,11 @@ class ApiClient {
       } else if (error instanceof Error) {
         message = error.message;
       }
-      
+
       // Use warn instead of error to reduce LogBox noise, but still log details
       console.warn(`[API CLIENT] Request failed to ${url}:`, message);
       console.warn(`[API CLIENT] Full error:`, error);
-      
+
       return {
         success: false,
         error: message,
@@ -147,6 +147,7 @@ export type ResponderRoutePayload = {
   userLocation: { latitude: number; longitude: number; address?: string };
   dispatcherName?: string;
   dispatcherPhone?: string;
+  serviceType?: string;
   responderBase?: {
     latitude: number;
     longitude: number;
@@ -280,11 +281,11 @@ export const sendVideoReport = async (
     if (!createResp.success || !createResp.data) {
       console.error(`[REAL API] ❌ BACKEND REQUEST FAILED!`);
       console.error(`[REAL API] Error was:`, createResp.error || 'Unknown error (no error message returned)');
-      
+
       return {
         success: false,
         report: {} as EmergencyReport,
-        message: 'Network connection failed. Please check your internet and try again.',
+        message: createResp.error || 'Network connection failed.',
       };
     }
 
@@ -300,16 +301,16 @@ export const sendVideoReport = async (
 
     // Fetch incident details to get responder assignment
     const incidentDetails = await getIncidentDetails(incidentId);
-    
+
     console.log(`[REAL API] Incident details response:`, incidentDetails);
 
     if (!incidentDetails.success || !incidentDetails.report) {
       console.warn('[REAL API] ⚠️ Could not get incident details');
-      
+
       return {
         success: false,
         report: {} as EmergencyReport,
-        message: 'Failed to retrieve incident details from server. Please check your internet connection.',
+        message: incidentDetails.error || 'Failed to retrieve incident details from server.',
       };
     }
 
@@ -322,13 +323,13 @@ export const sendVideoReport = async (
       // Use responder base location if available; else fallback offset near user
       const responderStart = report.responderBase
         ? {
-            latitude: report.responderBase.latitude,
-            longitude: report.responderBase.longitude,
-          }
+          latitude: report.responderBase.latitude,
+          longitude: report.responderBase.longitude,
+        }
         : {
-            latitude: location.latitude + 0.01,
-            longitude: location.longitude - 0.01,
-          };
+          latitude: location.latitude + 0.01,
+          longitude: location.longitude - 0.01,
+        };
 
       console.log('[REAL API] Using responder start position:', responderStart);
 
@@ -339,6 +340,7 @@ export const sendVideoReport = async (
         userLocation: location,
         dispatcherName: report.assignedDispatcher?.name || 'Assigned Responder',
         dispatcherPhone: report.assignedDispatcher?.phone,
+        serviceType: incidentDetails.report.description,
         responderBase: report.responderBase,
       });
     } else {
@@ -351,7 +353,7 @@ export const sendVideoReport = async (
     return {
       success: true,
       report,
-      message: hasResponder 
+      message: hasResponder
         ? 'Emergency report submitted successfully. Responder assigned.'
         : 'Emergency report submitted successfully. Waiting for dispatch.',
     };
@@ -372,7 +374,7 @@ export const sendSMSReport = async (
 ): Promise<ReportResponse> => {
   try {
     console.log(`[REAL API] Sending SMS report: ${message}`);
-    
+
     const requestData: CreateReportRequest = {
       type: 'sms',
       location,
@@ -380,7 +382,7 @@ export const sendSMSReport = async (
     };
 
     const response = await apiClient.post<EmergencyReport>('/reports/sms', requestData);
-    
+
     if (response.success && response.data) {
       return {
         success: true,
@@ -408,9 +410,9 @@ export const sendSMSReport = async (
 export const getUserIncidents = async (userId: string): Promise<IncidentListResponse> => {
   try {
     console.log(`[REAL API] Fetching incidents for user: ${userId}`);
-    
+
     const response = await apiClient.get<EmergencyReport[]>(`/users/${userId}/incidents`);
-    
+
     if (response.success && response.data) {
       return {
         success: true,
@@ -438,10 +440,10 @@ export const updateIncidentStatus = async (
 ): Promise<{ success: boolean; message: string }> => {
   try {
     console.log(`[REAL API] Updating incident ${incidentId} status to: ${status}`);
-    
+
     const requestData: UpdateStatusRequest = { status };
     const response = await apiClient.put(`/incidents/${incidentId}/status`, requestData);
-    
+
     if (response.success) {
       return {
         success: true,
@@ -468,7 +470,7 @@ export const updateIncidentStatus = async (
 export const getIncidentDetails = async (incidentId: string): Promise<ReportResponse> => {
   try {
     console.log(`[REAL API] Fetching incident details for: ${incidentId}`);
-    
+
     // Backend endpoint: GET /api/incident/:incidentId
     const response = await apiClient.get<{
       success: boolean;
@@ -485,11 +487,11 @@ export const getIncidentDetails = async (incidentId: string): Promise<ReportResp
         responder_base?: { name?: string; latitude: number; longitude: number; address?: string | null } | null;
       };
     }>(`/incident/${incidentId}`);
-    
+
     if (response.success && response.data?.incident) {
       const backendIncident = response.data.incident;
       console.log('[REAL API] Backend incident response:', backendIncident);
-      
+
       // Map backend response to EmergencyReport format
       const report: EmergencyReport = {
         id: backendIncident.id,
@@ -500,18 +502,18 @@ export const getIncidentDetails = async (incidentId: string): Promise<ReportResp
         status: backendIncident.status as EmergencyReport['status'],
         assignedDispatcher: backendIncident.assigned_dispatcher
           ? {
-              id: backendIncident.assigned_dispatcher.id,
-              name: backendIncident.assigned_dispatcher.name,
-              phone: backendIncident.assigned_dispatcher.phone,
-            }
+            id: backendIncident.assigned_dispatcher.id,
+            name: backendIncident.assigned_dispatcher.name,
+            phone: backendIncident.assigned_dispatcher.phone,
+          }
           : undefined,
         responderBase: backendIncident.responder_base
           ? {
-              latitude: backendIncident.responder_base.latitude,
-              longitude: backendIncident.responder_base.longitude,
-              name: backendIncident.responder_base.name,
-              address: backendIncident.responder_base.address ?? undefined,
-            }
+            latitude: backendIncident.responder_base.latitude,
+            longitude: backendIncident.responder_base.longitude,
+            name: backendIncident.responder_base.name,
+            address: backendIncident.responder_base.address ?? undefined,
+          }
           : undefined,
         description: `Emergency ${backendIncident.service_type} incident`,
       };
@@ -552,7 +554,7 @@ export const uploadMediaFile = async (
 ): Promise<{ success: boolean; mediaUrl?: string; message: string }> => {
   try {
     console.log(`[REAL API] Uploading ${fileType} file for report: ${reportId}`);
-    
+
     // Create FormData for file upload
     const formData = new FormData();
     formData.append('file', {
@@ -577,7 +579,7 @@ export const uploadMediaFile = async (
     }
 
     const data = await response.json();
-    
+
     if (data.success) {
       return {
         success: true,
@@ -608,9 +610,9 @@ export const getDispatcherInfo = async (incidentId: string): Promise<{
 }> => {
   try {
     console.log(`[REAL API] Fetching dispatcher info for incident: ${incidentId}`);
-    
+
     const response = await apiClient.get<EmergencyReport['assignedDispatcher']>(`/incidents/${incidentId}/dispatcher`);
-    
+
     if (response.success && response.data) {
       return {
         success: true,
@@ -649,13 +651,13 @@ export const pingApi = async (): Promise<{ ok: boolean; url: string; error?: str
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
-    
-    const res = await fetch(testUrl, { 
+
+    const res = await fetch(testUrl, {
       method: 'GET',
       signal: controller.signal
     });
     clearTimeout(timeoutId);
-    
+
     if (res.ok) {
       const data = await res.json();
       console.log(`[API CLIENT] ✅ Connection successful:`, data);
@@ -666,15 +668,15 @@ export const pingApi = async (): Promise<{ ok: boolean; url: string; error?: str
   } catch (e) {
     const errorMsg = e instanceof Error ? e.message : 'Unknown error';
     console.warn(`[API CLIENT] ❌ Connection test failed:`, errorMsg);
-    
+
     if (errorMsg.includes('Network request failed') || errorMsg.includes('Failed to fetch')) {
-      return { 
-        ok: false, 
-        url: testUrl, 
-        error: `Cannot reach backend server. Make sure:\n1. Backend is running (cd backend && node server.js)\n2. IP address matches: ${API_BASE_URL}\n3. Firewall allows port 3000` 
+      return {
+        ok: false,
+        url: testUrl,
+        error: `Cannot reach backend server. Make sure:\n1. Backend is running (cd backend && node server.js)\n2. IP address matches: ${API_BASE_URL}\n3. Firewall allows port 3000`
       };
     }
-    
+
     return { ok: false, url: testUrl, error: errorMsg };
   }
 };

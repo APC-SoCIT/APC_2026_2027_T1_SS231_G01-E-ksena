@@ -5,6 +5,8 @@ import LoadingScreen from '../screens/LoadingScreen';
 import AuthStack from './AuthStack';
 import MainStack from './MainStack';
 
+import CallScreen from '../screens/main/CallScreen';
+
 const Stack = createStackNavigator();
 
 const AppNavigator: React.FC = () => {

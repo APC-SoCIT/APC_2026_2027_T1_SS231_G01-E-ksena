@@ -102,10 +102,12 @@ const VideoCameraScreen: React.FC = () => {
       setIsAnalyzing(false);
 
       if (!result.success || !result.report?.id) {
-         throw new Error('Failed to create incident on server');
+         throw new Error(`[URL: ${process.env.EXPO_PUBLIC_API_BASE_URL}] Failed to create incident on server: ${result.message}`);
       }
       
-      Alert.alert('Emergency Reported', 'Your video was successfully analyzed and responders are notified!', [
+      const aiResult = result.report?.description ? result.report.description : 'Your video was successfully analyzed and responders are notified!';
+      
+      Alert.alert('Emergency Detected!', `AI Analysis complete.\n\nDetected: ${aiResult}\n\nHelp is on the way!`, [
         { text: 'OK', onPress: () => navigation.navigate('MainTabs' as any) }
       ]);
       

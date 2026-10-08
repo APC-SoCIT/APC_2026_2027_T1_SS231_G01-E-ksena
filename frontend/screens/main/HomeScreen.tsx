@@ -14,6 +14,8 @@ import { useNavigation } from '@react-navigation/native';
 import { useAuth } from '../../context/AuthContext';
 import { consumePendingResponderRoute } from '../../services/ReportService';
 import Constants from 'expo-constants';
+import * as SMS from 'expo-sms';
+import * as Location from 'expo-location';
 
 interface ResponderData {
   incidentId: string;
@@ -22,11 +24,12 @@ interface ResponderData {
   responderBase?: { latitude: number; longitude: number; name?: string; address?: string | null };
   dispatcherName: string;
   dispatcherPhone?: string | null;
+  serviceType?: string;
 }
 
 const HomeScreen: React.FC = () => {
   const navigation = useNavigation();
-  const { state } = useAuth();
+  const { state, setLocation } = useAuth();
 
   const [responderData, setResponderData] = useState<ResponderData | null>(null);
   const [routeCoordinates, setRouteCoordinates] = useState<Array<[number, number]> | null>(null);
@@ -36,6 +39,34 @@ const HomeScreen: React.FC = () => {
     state.location.longitude || 121.0215128,
     state.location.latitude || 14.5310248,
   ]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permission Denied', 'Allow location access to use this app properly.');
+          return;
+        }
+
+        const location = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.High,
+        });
+
+        const { latitude, longitude } = location.coords;
+        const addressResponse = await Location.reverseGeocodeAsync({ latitude, longitude });
+        const addressEntry = addressResponse[0];
+        const address = addressEntry
+          ? `${addressEntry.street || ''} ${addressEntry.city || ''} ${addressEntry.region || ''}`.trim()
+          : 'Unknown Location';
+
+        setLocation(latitude, longitude, address);
+        setMapCenter([longitude, latitude]);
+      } catch (error) {
+        console.error('Location Error:', error);
+      }
+    })();
+  }, []);
 
   // Fetch directions when responder data is set
   useEffect(() => {
@@ -49,8 +80,8 @@ const HomeScreen: React.FC = () => {
       const a =
         Math.sin(dLat / 2) * Math.sin(dLat / 2) +
         Math.cos((userLocation.latitude * Math.PI) / 180) *
-          Math.cos((responderLocation.latitude * Math.PI) / 180) *
-          Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        Math.cos((responderLocation.latitude * Math.PI) / 180) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
       const distKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
       setDistance(distKm);
       const etaMinutes = Math.round((distKm / 40) * 60);
@@ -89,6 +120,7 @@ const HomeScreen: React.FC = () => {
           responderBase: pending.responderBase,
           dispatcherName: pending.dispatcherName || 'Emergency Responder',
           dispatcherPhone: pending.dispatcherPhone,
+          serviceType: pending.serviceType,
         });
       }
     });
@@ -99,16 +131,31 @@ const HomeScreen: React.FC = () => {
     (navigation as any).navigate('Video');
   };
 
+  const handleSMSFallback = async () => {
+    try {
+      const isAvailable = await SMS.isAvailableAsync();
+      if (!isAvailable) {
+        Alert.alert('SMS Not Available', 'SMS is not available on this device.');
+        return;
+      }
+
+      const { latitude, longitude } = state.location;
+      if (latitude && longitude) {
+        const message = `EMERGENCY: I need help at ${latitude}, ${longitude}. Please send assistance immediately. Incident #${responderData?.incidentId}`;
+        const smsNumber = responderData?.dispatcherPhone || '+12345678901';
+        await SMS.sendSMSAsync([smsNumber], message);
+      }
+    } catch (error) {
+      console.error('Error sending SMS:', error);
+    }
+  };
+
   const handleCallResponder = () => {
     if (responderData?.dispatcherPhone) {
-      Alert.alert(
-        'Call Dispatcher',
-        `Call ${responderData.dispatcherName} at ${responderData.dispatcherPhone}?`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Call', onPress: () => Alert.alert('Info', 'Calling integration coming soon') },
-        ]
-      );
+      (navigation as any).navigate('CallScreen', {
+        incidentId: responderData.incidentId,
+        responderPhone: responderData.dispatcherPhone
+      });
     }
   };
 
@@ -119,10 +166,11 @@ const HomeScreen: React.FC = () => {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Google Map */}
       <MapView
         style={styles.map}
         provider="google"
+        showsUserLocation={true}
+        showsMyLocationButton={true}
         region={{
           latitude: mapCenter[1],
           longitude: mapCenter[0],
@@ -169,15 +217,15 @@ const HomeScreen: React.FC = () => {
                 routeCoordinates
                   ? routeCoordinates.map(c => ({ latitude: c[1], longitude: c[0] }))
                   : [
-                      {
-                        latitude: responderData.userLocation.latitude,
-                        longitude: responderData.userLocation.longitude,
-                      },
-                      {
-                        latitude: responderData.responderLocation.latitude,
-                        longitude: responderData.responderLocation.longitude,
-                      },
-                    ]
+                    {
+                      latitude: responderData.userLocation.latitude,
+                      longitude: responderData.userLocation.longitude,
+                    },
+                    {
+                      latitude: responderData.responderLocation.latitude,
+                      longitude: responderData.responderLocation.longitude,
+                    },
+                  ]
               }
               strokeColor="#3b82f6"
               strokeWidth={4}
@@ -201,6 +249,9 @@ const HomeScreen: React.FC = () => {
               <View>
                 <Text style={styles.responderName}>{responderData.dispatcherName}</Text>
                 <Text style={styles.incidentId}>Incident #{responderData.incidentId.substring(0, 8)}</Text>
+                {responderData.serviceType && (
+                  <Text style={styles.serviceType}>{responderData.serviceType}</Text>
+                )}
               </View>
             </View>
 
@@ -220,7 +271,7 @@ const HomeScreen: React.FC = () => {
                 <Phone size={18} color="#ffffff" />
                 <Text style={styles.buttonText}>Call</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.callButton, styles.messageButton]}>
+              <TouchableOpacity style={[styles.callButton, styles.messageButton]} onPress={handleSMSFallback}>
                 <MessageSquare size={18} color="#ffffff" />
                 <Text style={styles.buttonText}>Message</Text>
               </TouchableOpacity>
@@ -233,7 +284,14 @@ const HomeScreen: React.FC = () => {
           <View style={styles.noIncidentPanel}>
             <Zap size={32} color="#fbbf24" />
             <Text style={styles.noIncidentText}>No active emergency</Text>
-            <Text style={styles.noIncidentSubtext}>Tap above to send a report</Text>
+            <Text style={styles.noIncidentSubtext}>Tap above to send a video report</Text>
+
+            <View style={styles.offlineDivider} />
+
+            <TouchableOpacity style={styles.offlineSmsButton} onPress={handleSMSFallback}>
+              <MessageSquare size={20} color="#dc2626" />
+              <Text style={styles.offlineSmsText}>Offline? Send SMS Alert</Text>
+            </TouchableOpacity>
           </View>
         )}
       </View>
@@ -269,6 +327,7 @@ const styles = StyleSheet.create({
   },
   responderName: { fontSize: 18, fontWeight: 'bold', color: '#111827' },
   incidentId: { fontSize: 12, color: '#6b7280', marginTop: 2 },
+  serviceType: { fontSize: 14, color: '#dc2626', fontWeight: 'bold', marginTop: 4 },
   distanceRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 16 },
   distanceItem: { flex: 1, alignItems: 'center' },
   distanceLabel: { fontSize: 12, color: '#6b7280', marginBottom: 4, fontWeight: '600' },
@@ -286,6 +345,13 @@ const styles = StyleSheet.create({
   },
   noIncidentText: { fontSize: 16, fontWeight: 'bold', color: '#111827', marginTop: 8 },
   noIncidentSubtext: { fontSize: 13, color: '#6b7280', marginTop: 4 },
+  offlineDivider: { height: 1, backgroundColor: '#e5e7eb', width: '100%', marginVertical: 16 },
+  offlineSmsButton: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    paddingVertical: 12, paddingHorizontal: 20, borderRadius: 12,
+    borderWidth: 1, borderColor: '#dc2626', width: '100%', gap: 8
+  },
+  offlineSmsText: { color: '#dc2626', fontSize: 14, fontWeight: 'bold' },
 });
 
 export default HomeScreen;
