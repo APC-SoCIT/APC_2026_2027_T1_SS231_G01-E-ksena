@@ -84,9 +84,20 @@ export default function CallScreen() {
           async (payload) => {
             const signal = payload.payload;
             
-            // Only process signals from the responder
+              // Only process signals from the responder
             if (signal.sender === 'responder') {
               
+              // Handle Ready (Web App joined late and missed the initial offer)
+              if (signal.type === 'ready' && pc.current) {
+                const offer = await pc.current.createOffer({ iceRestart: true });
+                await pc.current.setLocalDescription(offer);
+                channelRef.current?.send({
+                  type: 'broadcast',
+                  event: 'webrtc-signaling',
+                  payload: { type: 'offer', offer: offer, sender: 'mobile' }
+                });
+              }
+
               // Handle Answer
               if (signal.type === 'answer' && pc.current) {
                 const answerDesc = new RTCSessionDescription(signal.answer);
