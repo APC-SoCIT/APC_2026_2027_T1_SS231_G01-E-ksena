@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   StyleSheet,
   Text,
@@ -16,6 +16,7 @@ import { consumePendingResponderRoute } from '../../services/ReportService';
 import Constants from 'expo-constants';
 import * as SMS from 'expo-sms';
 import * as Location from 'expo-location';
+import { supabase } from '../../services/supabaseClient';
 
 interface ResponderData {
   incidentId: string;
@@ -32,6 +33,7 @@ const HomeScreen: React.FC = () => {
   const { state, setLocation } = useAuth();
 
   const [responderData, setResponderData] = useState<ResponderData | null>(null);
+  const dispatchChannelRef = useRef<any>(null);
   const [routeCoordinates, setRouteCoordinates] = useState<Array<[number, number]> | null>(null);
   const [distance, setDistance] = useState(0);
   const [eta, setETA] = useState('');
@@ -126,6 +128,62 @@ const HomeScreen: React.FC = () => {
     });
     return () => unsubscribe?.();
   }, [navigation]);
+
+  // Listen for dispatch 'resolved' status from the web responder clicking "Done"
+  useEffect(() => {
+    if (!responderData?.incidentId) {
+      // Clean up any old channel if incident is cleared
+      if (dispatchChannelRef.current) {
+        supabase.removeChannel(dispatchChannelRef.current);
+        dispatchChannelRef.current = null;
+      }
+      return;
+    }
+
+    const incidentId = responderData.incidentId;
+
+    // Subscribe to changes on the dispatch table for this specific incident
+    const channel = supabase
+      .channel(`dispatch-resolved-${incidentId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'dispatch',
+          filter: `incident_id=eq.${incidentId}`,
+        },
+        (payload) => {
+          if (payload.new?.status === 'resolved') {
+            Alert.alert(
+              '✅ Dispatch Has Arrived!',
+              'The emergency responder has arrived at your location and marked the incident as resolved.',
+              [
+                {
+                  text: 'OK',
+                  onPress: () => {
+                    // Clean up and reset to normal home screen
+                    if (dispatchChannelRef.current) {
+                      supabase.removeChannel(dispatchChannelRef.current);
+                      dispatchChannelRef.current = null;
+                    }
+                    setResponderData(null);
+                  },
+                },
+              ]
+            );
+          }
+        }
+      )
+      .subscribe();
+
+    dispatchChannelRef.current = channel;
+
+    return () => {
+      supabase.removeChannel(channel);
+      dispatchChannelRef.current = null;
+    };
+  }, [responderData?.incidentId]);
 
   const handleEmergencyReport = () => {
     (navigation as any).navigate('Video');
