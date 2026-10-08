@@ -63,61 +63,61 @@ export default function CallScreen() {
 
       // Handle sending ICE candidates to the Web App
       pc.current.onicecandidate = async (event) => {
-        if (event.candidate) {
-          await supabase.from('webrtc_signals').insert({
-            call_id: incidentId,
-            from_phone: state.auth.user?.phone || state.auth.user?.email || 'user',
-            to_phone: responderPhone,
-            signal_type: 'ice-candidate',
-            signal_data: event.candidate.toJSON()
+        if (event.candidate && channelRef.current) {
+          channelRef.current.send({
+            type: 'broadcast',
+            event: 'webrtc-signaling',
+            payload: {
+              type: 'candidate',
+              candidate: event.candidate.toJSON(),
+              sender: 'mobile'
+            }
           });
         }
       };
 
-      // 3. Listen for answers and ICE candidates from the Web App
-      channelRef.current = supabase.channel(`call_${incidentId}`)
-        .on('postgres_changes', {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'webrtc_signals',
-          filter: `call_id=eq.${incidentId}`
-        }, async (payload) => {
-          const signal = payload.new;
-          
-          // Only process signals meant for us (from the responder)
-          if (signal.from_phone === responderPhone) {
+      // 3. Listen for answers and ICE candidates from the Web App via Broadcast
+      channelRef.current = supabase.channel(`webrtc-incident-${incidentId}`)
+        .on(
+          'broadcast',
+          { event: 'webrtc-signaling' },
+          async (payload) => {
+            const signal = payload.payload;
             
-            // Handle Answer
-            if (signal.signal_type === 'answer' && pc.current) {
-              const answerDesc = new RTCSessionDescription(signal.signal_data);
-              await pc.current.setRemoteDescription(answerDesc);
-            }
-            
-            // Handle ICE Candidates
-            if (signal.signal_type === 'ice-candidate' && pc.current) {
-              const candidate = new RTCIceCandidate(signal.signal_data);
-              await pc.current.addIceCandidate(candidate);
+            // Only process signals from the responder
+            if (signal.sender === 'responder') {
+              
+              // Handle Answer
+              if (signal.type === 'answer' && pc.current) {
+                const answerDesc = new RTCSessionDescription(signal.answer);
+                await pc.current.setRemoteDescription(answerDesc);
+              }
+              
+              // Handle ICE Candidates
+              if (signal.type === 'candidate' && pc.current) {
+                const candidate = new RTCIceCandidate(signal.candidate);
+                await pc.current.addIceCandidate(candidate);
+              }
             }
           }
-        })
-        .subscribe();
+        )
+        .subscribe(async (status) => {
+          if (status === 'SUBSCRIBED') {
+            // 4. Create and send the Offer to the Web App ONLY AFTER subscribed
+            const offer = await pc.current!.createOffer({});
+            await pc.current!.setLocalDescription(offer);
 
-      // 4. Create and send the Offer to the Web App
-      const offer = await pc.current.createOffer();
-      await pc.current.setLocalDescription(offer);
-
-      const { error: insertError } = await supabase.from('webrtc_signals').insert({
-        call_id: incidentId,
-        from_phone: state.auth.user?.phone || state.auth.user?.email || 'user',
-        to_phone: responderPhone,
-        signal_type: 'offer',
-        signal_data: offer
-      });
-
-      if (insertError) {
-        console.error('Failed to insert into webrtc_signals:', insertError);
-        Alert.alert('Database Error', 'Could not send video signal: ' + insertError.message);
-      }
+            channelRef.current.send({
+              type: 'broadcast',
+              event: 'webrtc-signaling',
+              payload: {
+                type: 'offer',
+                offer: offer,
+                sender: 'mobile'
+              }
+            });
+          }
+        });
 
     } catch (err) {
       console.error('WebRTC Error:', err);
