@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/auth';
 import { useRoleTheme } from '@/context/role-theme';
 import { emergencyTypeLabel } from '@/lib/emergency';
+import { isPlaceholderVideo, publicVideoUrl } from '@/lib/incident-video';
 import { PrimaryButton } from '@/components/primary-button';
 import {
   Spacing,
@@ -42,19 +43,6 @@ type VideoRow = {
 
 const RLS_HINT =
   ' Run supabase/admin-access.sql in the Supabase SQL Editor, then add this account to the admins table.';
-
-/** Placeholder paths the mobile app writes when no real file was uploaded. */
-function isPlaceholderVideo(path: string | null): boolean {
-  if (!path) return true;
-  return path.startsWith('mock://') || path.startsWith('live://');
-}
-
-function publicVideoUrl(row: VideoRow): string | null {
-  if (!row.video_path || isPlaceholderVideo(row.video_path)) return null;
-  if (row.video_path.startsWith('http')) return row.video_path;
-  const { data } = supabase.storage.from(row.bucket_id ?? 'incident-videos').getPublicUrl(row.video_path);
-  return data?.publicUrl ?? null;
-}
 
 function formatWhen(ts: string | null): string {
   if (!ts) return 'No date';

@@ -88,6 +88,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = async () => {
     await signOutResponder();
+    setSession(null);
   };
 
   const updateProfile = async (updates: ProfileUpdate) => {

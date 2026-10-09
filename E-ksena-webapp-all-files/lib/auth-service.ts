@@ -1,3 +1,4 @@
+import { isAuthSessionMissingError } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 import type { RoleThemeKey } from '@/constants/theme';
 
@@ -135,7 +136,39 @@ export async function changePassword(currentPassword: string, newPassword: strin
   if (error) throw error;
 }
 
+/**
+ * Removes the session saved in this browser without asking the server.
+ *
+ * supabase-js only clears its saved session after the server confirms the
+ * sign-out. When the server no longer knows the session - a password reset ends
+ * it, for one - signOut returns an error first and the dead copy stays behind,
+ * so the responder can never log out. _removeSession is what the library itself
+ * runs on a normal sign-out: it clears storage and announces SIGNED_OUT.
+ */
+async function clearStoredSession(): Promise<void> {
+  const auth = supabase.auth as unknown as {
+    _removeSession?: () => Promise<void>;
+    storageKey?: string;
+  };
+  if (typeof auth._removeSession === 'function') {
+    await auth._removeSession();
+    return;
+  }
+  if (auth.storageKey && typeof localStorage !== 'undefined') {
+    localStorage.removeItem(auth.storageKey);
+  }
+}
+
 export async function signOutResponder(): Promise<void> {
   const { error } = await supabase.auth.signOut();
-  if (error) throw error;
+  if (!error) return;
+  // Already signed out on the server is the result a sign-out wants. Finish it
+  // locally rather than report a failure the responder can do nothing about.
+  // Any other error - no connection, say - still fails, so logging out never
+  // looks successful when it was not.
+  if (isAuthSessionMissingError(error)) {
+    await clearStoredSession();
+    return;
+  }
+  throw error;
 }

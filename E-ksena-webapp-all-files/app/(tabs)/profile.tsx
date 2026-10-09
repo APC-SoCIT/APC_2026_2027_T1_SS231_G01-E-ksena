@@ -67,8 +67,19 @@ export default function ProfileScreen() {
     }
   };
 
-  const handleLogout = () => {
-    logout();
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+
+  const handleLogout = async () => {
+    setLogoutError(null);
+    try {
+      await logout();
+    } catch (err) {
+      const detail =
+        err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : '';
+      setLogoutError(
+        detail ? `Could not log out: ${detail}` : 'Could not log out. Check your connection and try again.'
+      );
+    }
   };
 
   return (
@@ -128,6 +139,12 @@ export default function ProfileScreen() {
 
         <PrimaryButton title={saving ? 'Saving…' : 'Save changes'} onPress={handleSave} style={styles.saveBtn} disabled={saving} />
       </View>
+
+      {logoutError ? (
+        <View style={[styles.errorBox, styles.logoutError]}>
+          <Text style={styles.errorText}>{logoutError}</Text>
+        </View>
+      ) : null}
 
       <Pressable onPress={handleLogout} style={styles.logoutBtn}>
         <Text style={styles.logoutBtnText}>Log out</Text>
@@ -219,6 +236,10 @@ const styles = StyleSheet.create({
   successText: {
     fontSize: FontSizes.sm,
     color: SUCCESS,
+  },
+  logoutError: {
+    width: '100%',
+    maxWidth: 560,
   },
   logoutBtn: {
     width: '100%',
