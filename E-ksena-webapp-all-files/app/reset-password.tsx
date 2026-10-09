@@ -19,7 +19,7 @@ import {
   DANGER_BG,
   DANGER_BORDER,
 } from '@/constants/theme';
-import { supabase } from '@/lib/supabase';
+import { supabase, INITIAL_URL_HASH, INITIAL_URL_SEARCH } from '@/lib/supabase';
 import { completePasswordReset, signOutResponder } from '@/lib/auth-service';
 import { passwordProblems } from '@/lib/password';
 
@@ -43,11 +43,18 @@ export default function ResetPasswordScreen() {
   useEffect(() => {
     let cancelled = false;
 
+    const fromHash = new URLSearchParams(INITIAL_URL_HASH.replace(/^#/, ''));
+    const fromQuery = new URLSearchParams(INITIAL_URL_SEARCH);
+    const pick = (key: string) => fromHash.get(key) ?? fromQuery.get(key);
+
+    // A session alone is not proof of recovery -- a responder who is merely
+    // logged in has one too. Only a genuine recovery link may show the form,
+    // or opening this URL in an unlocked browser would be enough to change
+    // the password without knowing the current one.
+    const codeParam = pick('code');
+    const isRecoveryLink = pick('type') === 'recovery' || !!codeParam;
+
     const readUrlError = (): string | null => {
-      if (typeof window === 'undefined') return null;
-      const fromHash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
-      const fromQuery = new URLSearchParams(window.location.search);
-      const pick = (key: string) => fromHash.get(key) ?? fromQuery.get(key);
       const code = pick('error_code');
       const description = pick('error_description');
       if (!code && !description && !pick('error')) return null;
@@ -60,26 +67,29 @@ export default function ResetPasswordScreen() {
       if (urlError && !cancelled) setLinkError(urlError);
 
       // A PKCE-style link arrives as ?code=... and has to be exchanged.
-      const codeParam =
-        typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('code') : null;
       if (codeParam && !urlError) {
         const { error } = await supabase.auth.exchangeCodeForSession(codeParam);
         if (error && !cancelled) setLinkError(error.message);
       }
 
       const { data } = await supabase.auth.getSession();
-      if (!cancelled) {
-        setHasRecoverySession(!!data.session);
-        setChecking(false);
+      if (cancelled) return;
+      if (data.session && !isRecoveryLink && !urlError) {
+        // Signed in and not here from a link: send them to the dashboard
+        // rather than presenting a password form out of nowhere.
+        router.replace('/(tabs)');
+        return;
       }
+      setHasRecoverySession(!!data.session && isRecoveryLink);
+      setChecking(false);
     })();
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!cancelled && session) {
-        setHasRecoverySession(true);
-        setLinkError(null);
-        setChecking(false);
-      }
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      if (cancelled || !session) return;
+      if (event !== 'PASSWORD_RECOVERY' && !isRecoveryLink) return;
+      setHasRecoverySession(true);
+      setLinkError(null);
+      setChecking(false);
     });
     return () => {
       cancelled = true;
