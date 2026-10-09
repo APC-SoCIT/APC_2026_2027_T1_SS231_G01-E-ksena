@@ -58,6 +58,16 @@ async function upsertResponderRecord(user: NonNullable<Awaited<ReturnType<typeof
   if (error) throw error;
 }
 
+/**
+ * Pushes the signed-in account's metadata into the responders directory.
+ * Profile edits only change auth metadata, which dispatch never reads -- without
+ * this the directory keeps whatever name and number were given at sign-up.
+ */
+export async function syncResponderRecord(): Promise<void> {
+  const { data } = await supabase.auth.getUser();
+  if (data.user) await upsertResponderRecord(data.user);
+}
+
 export async function verifySignupOtp(email: string, code: string): Promise<void> {
   const { data, error } = await supabase.auth.verifyOtp({ email, token: code, type: 'signup' });
   if (error) throw error;
