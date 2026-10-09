@@ -2,14 +2,18 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import type { Session } from '@supabase/supabase-js';
 
 import { supabase } from '@/lib/supabase';
-import { signOutResponder } from '@/lib/auth-service';
+import { signOutResponder, syncResponderRecord } from '@/lib/auth-service';
 import type { RoleThemeKey } from '@/constants/theme';
 
 export type ResponderUser = {
   role: RoleThemeKey;
   username: string;
   email?: string;
+  fullName?: string;
+  phone?: string;
 };
+
+export type ProfileUpdate = Partial<Pick<ResponderUser, 'username' | 'fullName' | 'phone'>>;
 
 type AuthContextValue = {
   isResponder: boolean;
@@ -22,7 +26,7 @@ type AuthContextValue = {
   user: ResponderUser | null;
   loading: boolean;
   logout: () => Promise<void>;
-  updateProfile: (updates: Partial<Pick<ResponderUser, 'username'>>) => Promise<void>;
+  updateProfile: (updates: ProfileUpdate) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -36,6 +40,8 @@ function userFromSession(session: Session | null): ResponderUser | null {
     role,
     username: (meta.username as string) ?? session.user.email ?? 'Responder',
     email: session.user.email,
+    fullName: (meta.full_name as string) ?? undefined,
+    phone: (meta.phone as string) ?? undefined,
   };
 }
 
@@ -84,9 +90,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await signOutResponder();
   };
 
-  const updateProfile = async (updates: Partial<Pick<ResponderUser, 'username'>>) => {
-    const { error } = await supabase.auth.updateUser({ data: { ...updates } });
+  const updateProfile = async (updates: ProfileUpdate) => {
+    // Auth metadata and the responders table spell these differently, so map
+    // the keys rather than spreading the camelCase ones straight through.
+    const meta: Record<string, string> = {};
+    if (updates.username !== undefined) meta.username = updates.username;
+    if (updates.fullName !== undefined) meta.full_name = updates.fullName;
+    if (updates.phone !== undefined) meta.phone = updates.phone;
+
+    const { error } = await supabase.auth.updateUser({ data: meta });
     if (error) throw error;
+    await syncResponderRecord();
     const { data } = await supabase.auth.getSession();
     setSession(data.session);
   };

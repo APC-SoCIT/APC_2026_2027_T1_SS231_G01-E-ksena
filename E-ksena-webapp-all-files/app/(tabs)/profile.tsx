@@ -3,6 +3,7 @@ import { View, Text, TextInput, StyleSheet, ScrollView, Platform, Pressable } fr
 import { useAuth } from '@/context/auth';
 import { useRoleTheme } from '@/context/role-theme';
 import { PrimaryButton } from '@/components/primary-button';
+import { PhoneInput, toE164, fromE164, isValidPhone } from '@/components/phone-input';
 import {
   Spacing,
   FontSizes,
@@ -24,13 +25,17 @@ export default function ProfileScreen() {
   const { user, logout, updateProfile } = useAuth();
   const theme = useRoleTheme();
   const [username, setUsername] = useState(user?.username ?? '');
+  const [fullName, setFullName] = useState(user?.fullName ?? '');
+  const [phone, setPhone] = useState(fromE164(user?.phone));
   const [formError, setFormError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setUsername(user?.username ?? '');
-  }, [user?.username]);
+    setFullName(user?.fullName ?? '');
+    setPhone(fromE164(user?.phone));
+  }, [user?.username, user?.fullName, user?.phone]);
 
   const handleSave = async () => {
     setSaved(false);
@@ -38,10 +43,22 @@ export default function ProfileScreen() {
       setFormError('Username is required.');
       return;
     }
+    if (!fullName.trim()) {
+      setFormError('Full name is required.');
+      return;
+    }
+    if (!isValidPhone(phone)) {
+      setFormError('Enter a valid contact number.');
+      return;
+    }
     setFormError(null);
     setSaving(true);
     try {
-      await updateProfile({ username: username.trim() });
+      await updateProfile({
+        username: username.trim(),
+        fullName: fullName.trim(),
+        phone: toE164(phone),
+      });
       setSaved(true);
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Could not save changes.');
@@ -64,6 +81,17 @@ export default function ProfileScreen() {
         </View>
 
         <View style={styles.fieldRow}>
+          <Text style={styles.label}>Full name</Text>
+          <TextInput
+            style={styles.input}
+            value={fullName}
+            onChangeText={setFullName}
+            placeholder="Full name"
+            placeholderTextColor={TEXT_SECONDARY}
+          />
+        </View>
+
+        <View style={styles.fieldRow}>
           <Text style={styles.label}>Username</Text>
           <TextInput
             style={styles.input}
@@ -80,6 +108,13 @@ export default function ProfileScreen() {
           <Text style={styles.value}>{user?.email}</Text>
         </View>
 
+        <View style={styles.fieldRow}>
+          <Text style={styles.label}>Contact number</Text>
+          <View style={styles.phoneSlot}>
+            <PhoneInput value={phone} onChange={setPhone} />
+          </View>
+        </View>
+
         {formError ? (
           <View style={styles.errorBox}>
             <Text style={styles.errorText}>{formError}</Text>
@@ -93,6 +128,7 @@ export default function ProfileScreen() {
 
         <PrimaryButton title={saving ? 'Saving…' : 'Save changes'} onPress={handleSave} style={styles.saveBtn} disabled={saving} />
       </View>
+
       <Pressable onPress={handleLogout} style={styles.logoutBtn}>
         <Text style={styles.logoutBtnText}>Log out</Text>
       </Pressable>
@@ -141,6 +177,9 @@ const styles = StyleSheet.create({
     fontSize: FontSizes.body,
     fontWeight: '500',
     color: TEXT_PRIMARY,
+    flex: Platform.OS === 'web' ? 1 : undefined,
+  },
+  phoneSlot: {
     flex: Platform.OS === 'web' ? 1 : undefined,
   },
   input: {

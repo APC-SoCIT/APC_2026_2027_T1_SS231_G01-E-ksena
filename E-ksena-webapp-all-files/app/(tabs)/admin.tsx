@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/auth';
 import { useRoleTheme } from '@/context/role-theme';
 import { emergencyTypeLabel } from '@/lib/emergency';
+import { PrimaryButton } from '@/components/primary-button';
 import {
   Spacing,
   FontSizes,
@@ -157,6 +158,7 @@ export default function AdminScreen() {
       {error ? (
         <View style={[styles.card, CardShadow, styles.errorCard]}>
           <Text style={styles.errorText}>{error}</Text>
+          <PrimaryButton title="Retry" onPress={load} style={styles.retryBtn} />
         </View>
       ) : null}
 
@@ -281,6 +283,7 @@ const styles = StyleSheet.create({
   emptyText: { fontSize: FontSizes.sm, color: TEXT_SECONDARY, paddingVertical: Spacing.md },
   loader: { marginVertical: Spacing.lg },
   errorCard: { backgroundColor: DANGER_BG, borderColor: DANGER_BORDER },
+  retryBtn: { marginTop: Spacing.md },
   errorText: { fontSize: FontSizes.sm, color: BRAND_RED },
   noticeCard: { marginTop: Spacing.lg },
   noticeTitle: { fontSize: FontSizes.body, fontWeight: '600', color: TEXT_PRIMARY, marginBottom: Spacing.sm },

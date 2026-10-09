@@ -6,19 +6,9 @@ import { Spacing, FontSizes, BRAND_RED, BRAND_RED_HOVER, TEXT_PRIMARY, TEXT_SECO
 import type { RoleThemeKey } from '@/constants/theme';
 import { signUpResponder } from '@/lib/auth-service';
 import { PhoneInput, toE164, isValidPhone } from '@/components/phone-input';
+import { passwordProblems, MIN_PASSWORD_LENGTH } from '@/lib/password';
 
-const MIN_PASSWORD_LENGTH = 8;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-function passwordProblems(value: string): string[] {
-  const missing: string[] = [];
-  if (value.length < MIN_PASSWORD_LENGTH) missing.push(`at least ${MIN_PASSWORD_LENGTH} characters`);
-  if (!/[A-Z]/.test(value)) missing.push('an uppercase letter');
-  if (!/[a-z]/.test(value)) missing.push('a lowercase letter');
-  if (!/\d/.test(value)) missing.push('a number');
-  if (!/[^A-Za-z0-9]/.test(value)) missing.push('a special character');
-  return missing;
-}
 
 const ROLES: { key: RoleThemeKey; label: string }[] = [
   { key: 'police', label: 'Police' },
@@ -34,7 +24,7 @@ export default function SignupScreen() {
   const [phone, setPhone] = useState('');
   const [rank, setRank] = useState('');
   const [office, setOffice] = useState('');
-  const [role, setRole] = useState<RoleThemeKey>('firefighter');
+  const [role, setRole] = useState<RoleThemeKey | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const router = useRouter();
@@ -74,6 +64,10 @@ export default function SignupScreen() {
     const missing = passwordProblems(p);
     if (missing.length > 0) {
       setError(`Password needs ${missing.join(', ')}.`);
+      return;
+    }
+    if (!role) {
+      setError('Select your role.');
       return;
     }
 
@@ -191,7 +185,7 @@ export default function SignupScreen() {
               return (
                 <Pressable
                   key={r.key}
-                  onPress={() => setRole(r.key)}
+                  onPress={() => { setRole(r.key); setError(null); }}
                   style={[styles.roleBtn, isActive && { borderColor: roleColor, backgroundColor: OFF_WHITE }]}
                 >
                   <Text style={[styles.roleBtnText, isActive && { color: roleColor, fontWeight: '600' }]}>{r.label}</Text>

@@ -23,6 +23,13 @@ export function toE164(national: string): string {
   return `${PH_DIAL}${digits}`;
 }
 
+/** Turns a stored +63 number back into the national digits the field shows. */
+export function fromE164(stored: string | null | undefined): string {
+  if (!stored) return '';
+  const digits = stored.replace(/\D/g, '');
+  return digits.startsWith('63') ? digits.slice(2) : normalizePhone(digits);
+}
+
 export function isValidPhone(national: string): boolean {
   const digits = normalizePhone(national);
   return digits.length >= 7 && digits.length <= 12;

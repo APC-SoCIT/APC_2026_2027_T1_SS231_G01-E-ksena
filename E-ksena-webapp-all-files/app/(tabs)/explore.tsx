@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { View, Text, ScrollView, TextInput, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
 import { GoogleMap, Marker, useJsApiLoader } from '@react-google-maps/api';
-import { supabase } from '@/lib/supabase';
+import { createReport } from '@/lib/api';
 import { PrimaryButton } from '@/components/primary-button';
 import { useRoleTheme } from '@/context/role-theme';
 import {
@@ -81,24 +81,12 @@ export default function ExploreScreen() {
       const matchedRole = matchResponderRole(emergencyType);
       const content = phone.trim() ? `Phone: ${phone.trim()}\n${message.trim()}` : message.trim();
 
-      const row: Record<string, unknown> = {
+      // Route through the backend so it can use the privileged service-role key.
+      // The title is the emergency type label; content carries the caller details.
+      await createReport({
+        title: emergencyType,
         content,
-        classified_as: emergencyType,
-        report_location_lat: pin.lat,
-        report_location_lng: pin.lng,
-        status: 'matched',
-        timestamp: new Date().toISOString(),
-        is_processed: false,
-        user_id: null,
-        incident_id: null,
-      };
-      let { error } = await supabase.from('reports').insert([row]);
-      if (error && /column.*status.*does not exist/i.test(error.message)) {
-        const { status: _status, ...rowNoStatus } = row;
-        const retry = await supabase.from('reports').insert([rowNoStatus]);
-        error = retry.error;
-      }
-      if (error) throw error;
+      });
 
       const roleLabel = matchedRole ? getRoleTheme(matchedRole).displayName : 'a responder';
       setSuccessMessage(`This ${emergencyTypeLabel(emergencyType)} report has been matched to ${roleLabel}.`);

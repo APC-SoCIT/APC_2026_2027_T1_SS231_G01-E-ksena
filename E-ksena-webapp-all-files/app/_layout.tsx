@@ -1,34 +1,47 @@
+import type { ReactNode } from 'react';
 import { View, ActivityIndicator } from 'react-native';
-import { Stack, Redirect, usePathname } from 'expo-router';
+import { Stack } from 'expo-router';
 import { BRAND_RED, WHITE, OFF_WHITE, FontSizes } from '@/constants/theme';
 import { AuthProvider, useAuth } from '@/context/auth';
 import { IncidentStatusProvider } from '@/context/incident-status';
 import { RoleThemeProvider } from '@/context/role-theme';
 
 function RootStack() {
+  const { isResponder } = useAuth();
   const headerOptions = {
     headerStyle: { backgroundColor: BRAND_RED },
     headerTintColor: WHITE,
     headerTitleStyle: { fontWeight: '600' as const, fontSize: FontSizes.subtitle },
   };
 
+  // Stack.Protected drops the screens this session may not reach and falls back to
+  // the first one left. Redirecting by hand replaced the navigator instead of a
+  // screen, so the URL changed but nothing rendered - the blank page after logout.
   return (
     <Stack screenOptions={headerOptions}>
-      <Stack.Screen name="index" options={{ title: 'Responder log in', headerShown: false }} />
-      <Stack.Screen name="signup" options={{ title: 'Responder registration', headerShown: true }} />
-      <Stack.Screen name="verify" options={{ title: 'Verify email', headerShown: true }} />
-      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Details' }} />
+      <Stack.Protected guard={!isResponder}>
+        <Stack.Screen name="index" options={{ title: 'Responder log in', headerShown: false }} />
+        <Stack.Screen name="signup" options={{ title: 'Responder registration', headerShown: true }} />
+        <Stack.Screen name="verify" options={{ title: 'Verify email', headerShown: true }} />
+        <Stack.Screen name="forgot-password" options={{ title: 'Forgot password', headerShown: false }} />
+      </Stack.Protected>
+      <Stack.Protected guard={isResponder}>
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Details' }} />
+      </Stack.Protected>
+      {/* Outside both guards on purpose: the recovery link signs the responder
+          in, so a signed-out-only guard would remove this screen underneath
+          them and send them to the dashboard without setting a password.
+          It has to stay last, though -- the fallback is the first surviving
+          screen, so declaring it earlier sent every signed-in responder here
+          instead of to the dashboard whenever they opened the site root. */}
+      <Stack.Screen name="reset-password" options={{ title: 'Set a new password', headerShown: false }} />
     </Stack>
   );
 }
 
-const PUBLIC_ROUTES = ['/', '/signup', '/verify'];
-
-function AuthGuard({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
-  const { isResponder, loading } = useAuth();
-  const isPublicRoute = PUBLIC_ROUTES.includes(pathname);
+function AuthGate({ children }: { children: ReactNode }) {
+  const { loading } = useAuth();
 
   if (loading) {
     return (
@@ -38,9 +51,6 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     );
   }
 
-  if (!isResponder && !isPublicRoute) {
-    return <Redirect href="/" />;
-  }
   return <>{children}</>;
 }
 
@@ -49,9 +59,9 @@ export default function RootLayout() {
     <AuthProvider>
       <RoleThemeProvider>
         <IncidentStatusProvider>
-          <AuthGuard>
+          <AuthGate>
             <RootStack />
-          </AuthGuard>
+          </AuthGate>
         </IncidentStatusProvider>
       </RoleThemeProvider>
     </AuthProvider>

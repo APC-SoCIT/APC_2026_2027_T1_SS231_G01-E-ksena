@@ -167,6 +167,14 @@ export default function LoginScreen() {
             hoverColor={BRAND_RED_HOVER}
           />
 
+            <View style={styles.forgotRow}>
+              <Link href="/forgot-password" asChild>
+                <Pressable hitSlop={8}>
+                  <Text style={styles.link}>Forgot password?</Text>
+                </Pressable>
+              </Link>
+            </View>
+
             <View style={styles.footer}>
               <Text style={styles.footerText}>Don&apos;t have an account? </Text>
               <Link href="/signup" asChild>
@@ -354,6 +362,10 @@ const styles = StyleSheet.create({
   },
   button: {
     marginTop: Spacing.sm,
+  },
+  forgotRow: {
+    alignItems: 'center',
+    marginTop: Spacing.md,
   },
   footer: {
     flexDirection: 'row',
