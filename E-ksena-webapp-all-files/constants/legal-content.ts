@@ -32,7 +32,7 @@ export type LegalDocumentContent = {
  * a mailbox the group actually monitors -- not a personal address that stops
  * being read once the term ends.
  */
-export const PRIVACY_CONTACT_EMAIL = 'SET-YOUR-GROUP-EMAIL@apc.edu.ph';
+export const PRIVACY_CONTACT_EMAIL = 'pmsumilhig@student.apc.edu.ph';
 
 /**
  * Drawn from the ALT_RUN SOFTDEV Project Documentation: the scope in 1.4, the
