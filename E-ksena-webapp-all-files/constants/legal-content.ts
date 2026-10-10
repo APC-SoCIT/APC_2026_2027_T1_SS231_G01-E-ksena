@@ -17,6 +17,12 @@ export type LegalSection = {
   /** Prose for this section. Rendered before the bullets. */
   paragraphs?: string[];
   bullets?: string[];
+  /**
+   * Draws the section out of the run of text. Reserved for the two clauses a
+   * reader is harmed by missing: that this is not a substitute for 911, and
+   * that a model reads the video before any person does.
+   */
+  emphasis?: boolean;
 };
 
 export type LegalDocumentContent = {
@@ -55,6 +61,7 @@ export const TERMS_DOCUMENT: LegalDocumentContent = {
     },
     {
       heading: 'E-ksena does not replace 911',
+      emphasis: true,
       paragraphs: [
         'This is the most important term in this document. E-ksena depends on your device, your mobile data connection, third-party services and an automated classifier, any of which can fail or be unavailable. No part of the platform guarantees that a report will be delivered, classified correctly, seen by a responder, or acted upon.',
         'In a life-threatening emergency, call 911 or your local emergency hotline. Use E-ksena in addition to those channels, never instead of them.',
@@ -176,6 +183,7 @@ export const PRIVACY_DOCUMENT: LegalDocumentContent = {
     },
     {
       heading: 'Automated analysis of your video',
+      emphasis: true,
       paragraphs: [
         'Your video is analysed by a machine learning model, not by a person, before any responder sees it. The model assigns a category such as fire, medical or police, together with a confidence score, and that score determines whether the report is escalated automatically or held for human review.',
         'This is automated processing, and you have the right to know it is happening. A responder reviews the incident before acting, and no decision affecting you is made by the model alone. If you believe a classification was wrong, tell us using the contact address above.',
