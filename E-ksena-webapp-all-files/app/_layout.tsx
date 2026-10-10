@@ -36,6 +36,10 @@ function RootStack() {
           screen, so declaring it earlier sent every signed-in responder here
           instead of to the dashboard whenever they opened the site root. */}
       <Stack.Screen name="reset-password" options={{ title: 'Set a new password', headerShown: false }} />
+      {/* Readable whether or not anyone is signed in: a visitor has to be able
+          to read what they are agreeing to before they agree to it. */}
+      <Stack.Screen name="terms" options={{ title: 'Terms and Conditions', headerShown: true }} />
+      <Stack.Screen name="privacy" options={{ title: 'Privacy Policy', headerShown: true }} />
     </Stack>
   );
 }

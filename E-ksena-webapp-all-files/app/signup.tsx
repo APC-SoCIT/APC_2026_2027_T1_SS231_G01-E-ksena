@@ -25,6 +25,7 @@ export default function SignupScreen() {
   const [rank, setRank] = useState('');
   const [office, setOffice] = useState('');
   const [role, setRole] = useState<RoleThemeKey | null>(null);
+  const [accepted, setAccepted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const router = useRouter();
@@ -68,6 +69,13 @@ export default function SignupScreen() {
     }
     if (!role) {
       setError('Select your role.');
+      return;
+    }
+    // Consent has to be a deliberate act, so the box starts unticked and
+    // registration stops here until it is ticked. The Data Privacy Act treats
+    // pre-ticked or assumed agreement as no consent at all.
+    if (!accepted) {
+      setError('Please accept the Terms and Conditions and the Privacy Policy.');
       return;
     }
 
@@ -194,6 +202,29 @@ export default function SignupScreen() {
             })}
           </View>
 
+          <View style={styles.consentRow}>
+            <Pressable
+              onPress={() => { setAccepted((prev) => !prev); setError(null); }}
+              hitSlop={8}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: accepted }}
+              style={[styles.checkbox, accepted && styles.checkboxOn]}
+            >
+              {accepted ? <Text style={styles.checkmark}>{'✓'}</Text> : null}
+            </Pressable>
+            <Text style={styles.consentText}>
+              I have read and accept the{' '}
+              <Text style={styles.link} onPress={() => router.push('/terms')}>
+                Terms and Conditions
+              </Text>
+              {' '}and the{' '}
+              <Text style={styles.link} onPress={() => router.push('/privacy')}>
+                Privacy Policy
+              </Text>
+              .
+            </Text>
+          </View>
+
           <PrimaryButton
             title={submitting ? 'Creating account…' : 'Save'}
             onPress={handleSignup}
@@ -313,6 +344,39 @@ const styles = StyleSheet.create({
     fontSize: FontSizes.sm,
     fontWeight: '500',
     color: TEXT_SECONDARY,
+  },
+  consentRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: WHITE,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  checkboxOn: {
+    backgroundColor: BRAND_RED,
+    borderColor: BRAND_RED,
+  },
+  checkmark: {
+    color: WHITE,
+    fontSize: FontSizes.xs,
+    fontWeight: '700',
+    lineHeight: 16,
+  },
+  consentText: {
+    flex: 1,
+    fontSize: FontSizes.xs,
+    color: TEXT_SECONDARY,
+    lineHeight: 18,
   },
   button: {
     marginTop: Spacing.sm,

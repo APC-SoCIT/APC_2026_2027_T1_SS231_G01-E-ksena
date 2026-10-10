@@ -183,6 +183,16 @@ export default function LoginScreen() {
                 </Pressable>
               </Link>
             </View>
+
+            <View style={styles.legalRow}>
+              <Text style={styles.legalLink} onPress={() => router.push('/terms')}>
+                Terms and Conditions
+              </Text>
+              <Text style={styles.legalSeparator}>{'·'}</Text>
+              <Text style={styles.legalLink} onPress={() => router.push('/privacy')}>
+                Privacy Policy
+              </Text>
+            </View>
           </View>
         </View>
       </ScrollView>
@@ -373,6 +383,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginTop: Spacing.lg,
     flexWrap: 'wrap',
+  },
+  legalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+    flexWrap: 'wrap',
+  },
+  legalLink: {
+    fontSize: FontSizes.xs,
+    color: TEXT_SECONDARY,
+    textDecorationLine: 'underline',
+  },
+  legalSeparator: {
+    fontSize: FontSizes.xs,
+    color: TEXT_SECONDARY,
   },
   footerText: {
     fontSize: FontSizes.sm,
