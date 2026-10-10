@@ -1,5 +1,6 @@
 import { View, Text, StyleSheet, ScrollView, Pressable, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
+import type { LegalDocumentContent } from '@/constants/legal-content';
 import {
   Spacing,
   FontSizes,
@@ -13,28 +14,9 @@ import {
   CardShadow,
 } from '@/constants/theme';
 
-/**
- * The address a data subject writes to in order to exercise their rights under
- * the Data Privacy Act. The law requires a reachable contact, so this must be a
- * mailbox the group actually monitors -- not a personal address that stops
- * being read once the term ends.
- */
-export const PRIVACY_CONTACT_EMAIL = 'SET-YOUR-GROUP-EMAIL@apc.edu.ph';
-
-export type LegalSection = {
-  heading: string;
-  paragraphs?: string[];
-  bullets?: string[];
-};
-
-type Props = {
-  title: string;
-  effectiveDate: string;
-  intro: string;
-  sections: LegalSection[];
-};
-
-export function LegalDocument({ title, effectiveDate, intro, sections }: Props) {
+// The wording lives in constants/legal-content.ts so the mobile app can share
+// it verbatim. This file only decides how it looks.
+export function LegalDocument({ title, effectiveDate, intro, sections }: LegalDocumentContent) {
   const router = useRouter();
 
   return (
