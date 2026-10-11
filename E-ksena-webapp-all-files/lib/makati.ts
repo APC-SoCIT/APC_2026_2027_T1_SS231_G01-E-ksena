@@ -1,22 +1,52 @@
 
 
+import { MAKATI_OUTER_RING, MAKATI_ENCLAVES, type BoundaryRing } from '@/constants/makati-boundary';
+
 export const MAKATI_CENTER = { lat: 14.5547, lng: 121.0244 };
 
-export const MAKATI_BOUNDS = {
-  north: 14.58,
-  south: 14.5,
-  east: 121.07,
-  west: 120.99,
-};
+/**
+ * The box the outline fits inside. Worked out from the outline rather than
+ * typed in, so the two cannot drift apart, and used only to dismiss a point
+ * that is nowhere near before walking six hundred edges. It is not the
+ * service area: most of this box is other cities.
+ */
+export const MAKATI_BOUNDS = MAKATI_OUTER_RING.reduce(
+  (box, [lat, lng]) => ({
+    north: Math.max(box.north, lat),
+    south: Math.min(box.south, lat),
+    east: Math.max(box.east, lng),
+    west: Math.min(box.west, lng),
+  }),
+  { north: -Infinity, south: Infinity, east: -Infinity, west: Infinity }
+);
 
+// Ray casting: a line drawn east from the point crosses the ring's edges an odd
+// number of times if the point is inside it and an even number if it is not.
+function ringContains(ring: BoundaryRing, lat: number, lng: number): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [latI, lngI] = ring[i];
+    const [latJ, lngJ] = ring[j];
+    const straddles = latI > lat !== latJ > lat;
+    if (straddles && lng < ((lngJ - lngI) * (lat - latI)) / (latJ - latI) + lngI) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/**
+ * Whether a point is inside Makati City, judged against the city's actual
+ * outline. This is the one place the service area is decided: reports are
+ * marked in or out of area by it, and the report form refuses a pin it
+ * rejects.
+ */
 export function isWithinMakati(lat: number | null | undefined, lng: number | null | undefined): boolean {
   if (lat == null || lng == null || Number.isNaN(lat) || Number.isNaN(lng)) return false;
-  return (
-    lat >= MAKATI_BOUNDS.south &&
-    lat <= MAKATI_BOUNDS.north &&
-    lng >= MAKATI_BOUNDS.west &&
-    lng <= MAKATI_BOUNDS.east
-  );
+  if (lat < MAKATI_BOUNDS.south || lat > MAKATI_BOUNDS.north) return false;
+  if (lng < MAKATI_BOUNDS.west || lng > MAKATI_BOUNDS.east) return false;
+  if (!ringContains(MAKATI_OUTER_RING, lat, lng)) return false;
+  return !MAKATI_ENCLAVES.some((enclave) => ringContains(enclave, lat, lng));
 }
 
 /**
