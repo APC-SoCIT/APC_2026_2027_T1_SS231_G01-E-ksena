@@ -1,13 +1,41 @@
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { View, ActivityIndicator } from 'react-native';
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { BRAND_RED, WHITE, OFF_WHITE, FontSizes } from '@/constants/theme';
 import { AuthProvider, useAuth } from '@/context/auth';
+import { INITIAL_URL_HASH, INITIAL_URL_SEARCH } from '@/lib/supabase';
 import { IncidentStatusProvider } from '@/context/incident-status';
 import { RoleThemeProvider } from '@/context/role-theme';
 
+/**
+ * Supabase sends the recovery token to the project's Site URL when the
+ * redirect it was given is not on the allow list, which drops the responder on
+ * the site root carrying `type=recovery` in the fragment. supabase-js then
+ * reads that fragment and signs them in, so the guards swap to the dashboard
+ * and the reset screen is never reached: the recovery link quietly becomes a
+ * login link, and the password it was sent to change stays as it was.
+ *
+ * Catching it here means the flow survives a misconfigured Site URL, though
+ * the allow list is still the thing to fix.
+ */
+function useRecoveryRedirect() {
+  const router = useRouter();
+  const handled = useRef(false);
+
+  useEffect(() => {
+    if (handled.current) return;
+    const isRecovery =
+      INITIAL_URL_HASH.includes('type=recovery') || INITIAL_URL_SEARCH.includes('type=recovery');
+    if (!isRecovery) return;
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/reset-password')) return;
+    handled.current = true;
+    router.replace('/reset-password');
+  }, [router]);
+}
+
 function RootStack() {
   const { isResponder } = useAuth();
+  useRecoveryRedirect();
   const headerOptions = {
     headerStyle: { backgroundColor: BRAND_RED },
     headerTintColor: WHITE,
