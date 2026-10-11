@@ -63,6 +63,12 @@ interface EmergencyReport {
    * see the note where reports are loaded.
    */
   outsideArea: boolean;
+  /**
+   * What the operator typed for a report taken by phone or SMS. Null for a
+   * report from the citizen app, which has a video instead and whose text is
+   * only a generated placeholder.
+   */
+  details: string | null;
 }
 
 function hasValidCoords(lat: number | null, lng: number | null): boolean {
@@ -148,7 +154,7 @@ export default function MapScreen() {
       setReports([]);
       return;
     }
-    const selectCols = 'report_id, incident_id, report_location_lat, report_location_lng, classified_as, status, timestamp, video_path, bucket_id';
+    const selectCols = 'report_id, incident_id, report_location_lat, report_location_lng, classified_as, status, timestamp, video_path, bucket_id, content';
     let data: unknown[] | null = null;
     let error: { message: string } | null = null;
 
@@ -163,7 +169,7 @@ export default function MapScreen() {
     if (error && /column.*status.*does not exist/i.test(error.message)) {
       const fallback = await supabase
         .from('reports')
-        .select('report_id, incident_id, report_location_lat, report_location_lng, classified_as, timestamp, video_path, bucket_id')
+        .select('report_id, incident_id, report_location_lat, report_location_lng, classified_as, timestamp, video_path, bucket_id, content')
         .in('classified_as', allowedTypes);
       data = fallback.data;
       error = fallback.error;
@@ -199,6 +205,7 @@ export default function MapScreen() {
         status: ((row.status as EmergencyStatus) ?? 'matched'),
         timestamp: row.timestamp as string | undefined,
         outsideArea,
+        details: row.incident_id ? null : ((row.content as string | null) ?? '').trim() || null,
       });
     }
     setReports(locations);
@@ -479,6 +486,13 @@ export default function MapScreen() {
   const locationText = selectedReport
     ? addressCache[selectedReport.id] ?? `${selectedReport.lat.toFixed(5)}, ${selectedReport.lng.toFixed(5)}`
     : '';
+  // A report taken over the phone has no video, so what the operator typed --
+  // the caller's number and what they said -- is all the responder has to go
+  // on. Each caller in a grouped card may have left something different.
+  const typedDetails = (selectedGroup?.members ?? [])
+    .map((member) => member.details)
+    .filter((details): details is string => !!details);
+
   const distanceText = route?.distance?.text ?? (straightLineKm != null ? `~${straightLineKm.toFixed(2)} km` : '—');
   // Distance already falls back to a straight-line figure when there is no
   // route, so the travel time does too. Leaving it as a dash told a responder
@@ -500,6 +514,12 @@ export default function MapScreen() {
             {route?.duration?.text ? <Text style={styles.etaAway}>{route.duration.text} away</Text> : null}
           </View>
           <Text style={styles.selectedDetail}>{locationText}</Text>
+          {typedDetails.map((details, i) => (
+            <View key={`${i}-${details}`} style={styles.detailsBox}>
+              <Text style={styles.detailsLabel}>REPORTED BY PHONE OR SMS</Text>
+              <Text style={styles.detailsText}>{details}</Text>
+            </View>
+          ))}
           {selectedReport.outsideArea ? (
             <View style={styles.outsideBanner}>
               <Text style={styles.outsideBannerTitle}>Outside service area</Text>
@@ -607,6 +627,12 @@ export default function MapScreen() {
             </View>
           </View>
           <Text style={styles.selectedDetail}>Location: {locationText}</Text>
+          {typedDetails.map((details, i) => (
+            <View key={`${i}-${details}`} style={styles.detailsBox}>
+              <Text style={styles.detailsLabel}>REPORTED BY PHONE OR SMS</Text>
+              <Text style={styles.detailsText}>{details}</Text>
+            </View>
+          ))}
           {selectedReport.outsideArea ? (
             <View style={styles.outsideBanner}>
               <Text style={styles.outsideBannerTitle}>Outside service area</Text>
@@ -1010,6 +1036,26 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.xs,
     paddingHorizontal: Spacing.sm,
     marginBottom: Spacing.sm,
+  },
+  detailsBox: {
+    backgroundColor: OFF_WHITE,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    marginTop: Spacing.sm,
+  },
+  detailsLabel: {
+    fontSize: FontSizes.xs,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    color: TEXT_SECONDARY,
+    marginBottom: Spacing.xs,
+  },
+  detailsText: {
+    fontSize: FontSizes.sm,
+    color: TEXT_PRIMARY,
+    lineHeight: 20,
   },
   outsideBanner: {
     backgroundColor: DANGER_BG,

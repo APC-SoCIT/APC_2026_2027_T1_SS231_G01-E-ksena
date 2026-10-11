@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { View, Text, ScrollView, TextInput, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
 import { GoogleMap, Marker, useJsApiLoader } from '@react-google-maps/api';
-import { createReport } from '@/lib/api';
+import { supabase } from '@/lib/supabase';
 import { PrimaryButton } from '@/components/primary-button';
 import { useRoleTheme } from '@/context/role-theme';
 import {
@@ -81,12 +81,31 @@ export default function ExploreScreen() {
       const matchedRole = matchResponderRole(emergencyType);
       const content = phone.trim() ? `Phone: ${phone.trim()}\n${message.trim()}` : message.trim();
 
-      // Route through the backend so it can use the privileged service-role key.
-      // The title is the emergency type label; content carries the caller details.
-      await createReport({
-        title: emergencyType,
-        content,
-      });
+      // Saved as the signed-in responder, not through the backend. That route
+      // stored a title and the text and nothing else, so the pin and the
+      // emergency type never reached the database and the report could not
+      // appear on any responder's map, whatever the success message said.
+      //
+      // No .select() on purpose. Asking for the row back makes the database
+      // test it against the read policy, and a medic taking a hotline call
+      // about a fire may not read fire reports: the save would be refused for
+      // exactly the report this form exists to record.
+      const { error } = await supabase.from('reports').insert([
+        {
+          // The caller has no account and the person typing is not the one
+          // reporting, so nobody is put down as the reporting user.
+          user_id: null,
+          incident_id: null,
+          classified_as: emergencyType,
+          status: 'matched',
+          report_location_lat: pin.lat,
+          report_location_lng: pin.lng,
+          timestamp: new Date().toISOString(),
+          is_processed: false,
+          content,
+        },
+      ]);
+      if (error) throw error;
 
       const roleLabel = matchedRole ? getRoleTheme(matchedRole).displayName : 'a responder';
       setSuccessMessage(`This ${emergencyTypeLabel(emergencyType)} report has been matched to ${roleLabel}.`);
@@ -101,11 +120,16 @@ export default function ExploreScreen() {
           : err && typeof err === 'object' && 'message' in err
             ? String((err as { message: unknown }).message)
             : String(err);
+      // The policy hint used to say to run supabase/reports-rls.sql. That file
+      // grants everything on reports to everyone, including visitors who are
+      // not signed in, so following it would have undone the access rules.
       const hint = /column.*status.*does not exist/i.test(msg)
         ? ' Run supabase/reports-emergency-workflow.sql in Supabase SQL Editor to add the status column.'
-        : /policy|permission|rls|row level security/i.test(msg)
-          ? ' Run supabase/reports-rls.sql in SQL Editor to allow insert/select.'
-          : '';
+        : /null value in column|foreign key/i.test(msg)
+          ? ' Run supabase/reports-allow-null-user.sql in Supabase SQL Editor so a report can be saved without a linked user or incident.'
+          : /policy|permission|rls|row level security/i.test(msg)
+            ? ' The database refused the save for this account. Sign out and back in; if it continues, the insert policy on the reports table needs checking.'
+            : '';
       setFormError(msg + hint);
     } finally {
       setSubmitting(false);
