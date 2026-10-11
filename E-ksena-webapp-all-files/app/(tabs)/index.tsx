@@ -355,14 +355,24 @@ export default function MapScreen() {
     setStatusError(null);
     setReassigning(true);
     const ids = group.members.map((m) => m.id);
-    const { error } = await supabase
-      .from('reports')
-      .update({ classified_as: defaultEmergencyTypeForRole(role) })
-      .in('report_id', ids);
+    // Through reassign_reports rather than a direct update: the handoff writes
+    // a classification outside this responder's own scope, which Row Level
+    // Security rejects. The function carries the same authority check and
+    // returns how many reports it moved.
+    const { data: movedCount, error } = await supabase.rpc('reassign_reports', {
+      report_ids: ids,
+      new_type: defaultEmergencyTypeForRole(role),
+    });
     setReassigning(false);
     if (error) {
       setStatusError(error.message);
       Alert.alert('Could not change responder type', error.message);
+      return;
+    }
+    if (movedCount === 0) {
+      const message = 'This incident is no longer assigned to your service, so it cannot be reassigned.';
+      setStatusError(message);
+      Alert.alert('Could not change responder type', message);
       return;
     }
 
