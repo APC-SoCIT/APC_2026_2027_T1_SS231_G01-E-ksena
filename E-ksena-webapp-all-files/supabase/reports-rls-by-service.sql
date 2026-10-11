@@ -80,9 +80,10 @@ CREATE POLICY "Responders read own service reports" ON public.reports
   );
 
 -- USING restricts which rows may be acted on: your own service's, or one no
--- service has claimed. WITH CHECK is deliberately looser, because reassigning
--- rewrites classified_as to another service -- requiring the row to still
--- match afterwards would make every handoff fail.
+-- service has claimed. This policy covers status changes. It does not make
+-- reassignment possible, however loose its WITH CHECK is: handing a report to
+-- another service goes through public.reassign_reports, and
+-- supabase/reassign-reports-function.sql explains why it has to.
 DROP POLICY IF EXISTS "Authenticated update reports" ON public.reports;
 DROP POLICY IF EXISTS "Responders update own service reports" ON public.reports;
 CREATE POLICY "Responders update own service reports" ON public.reports
@@ -92,12 +93,10 @@ CREATE POLICY "Responders update own service reports" ON public.reports
     OR public.report_is_unassigned(classified_as)
     OR EXISTS (SELECT 1 FROM public.admins a WHERE a.auth_user_id = auth.uid())
   )
-  -- auth.uid(), not auth.role(). Reassignment failed with "new row violates
-  -- row-level security policy" while this read auth.role(), which evaluates to
-  -- nothing here; auth.uid() is what every working policy in this project
-  -- relies on. Still requires a signed-in caller, and USING above already
-  -- decides which rows may be touched -- this only has to let the handoff
-  -- write a classification belonging to another service.
+  -- Requires a signed-in caller and nothing more; USING above has already
+  -- decided which rows may be touched. An earlier note here blamed auth.role()
+  -- for reassignment being refused. That was wrong: the refusal came from the
+  -- read policy being applied to the updated row, not from this check.
   WITH CHECK (auth.uid() IS NOT NULL);
 
 -- INSERT is left exactly as reports-rls-restrict.sql set it. DELETE still has

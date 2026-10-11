@@ -60,9 +60,9 @@ ALTER TABLE public.dispatch_audit_log ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Authenticated append audit entries" ON public.dispatch_audit_log;
 CREATE POLICY "Authenticated append audit entries" ON public.dispatch_audit_log
   FOR INSERT
-  -- auth.uid() rather than auth.role(), for the reason given in
-  -- supabase/reports-rls-by-service.sql: auth.role() evaluates to nothing in
-  -- this project, which silently blocked every audit write.
+  -- auth.uid() for both halves, the same test the other policies use. An
+  -- earlier note here said auth.role() had been blocking every audit write;
+  -- that was never established and should not be relied on.
   WITH CHECK (auth.uid() IS NOT NULL AND actor_auth_id = auth.uid());
 
 -- Admins may read the whole trail; a responder may read their own entries.

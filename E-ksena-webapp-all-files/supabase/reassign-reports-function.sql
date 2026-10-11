@@ -9,11 +9,17 @@
 --   new row violates row-level security policy for table "reports"
 --
 -- even with WITH CHECK reduced to auth.uid() IS NOT NULL, with auth.uid()
--- confirmed non-null in the same session and no triggers on the table. The
--- new row is being judged against the service scope somewhere the policy
--- definitions do not show.
+-- confirmed non-null in the same session and no triggers on the table.
 --
--- Rather than keep bending the policy around that, the handoff is a function.
+-- The UPDATE policy was never what refused it. When an UPDATE reads the table
+-- it is changing -- and a WHERE clause is enough -- PostgreSQL also tests the
+-- row as it will be afterwards against the SELECT policy (see "Policies
+-- Applied by Command Type" under CREATE POLICY in the PostgreSQL manual). A
+-- reassigned report belongs to another service, which the responder handing
+-- it over may not read, so the new row fails that test whatever the UPDATE
+-- policy says. No UPDATE policy can allow the handoff while reads stay
+-- scoped by service, which is why this is a function and not a policy.
+--
 -- It is also the better place for it: who may reassign what is a rule about
 -- dispatch, not about row visibility, and written here it can be read.
 --
