@@ -524,6 +524,17 @@ export default function MapScreen() {
             </View>
           </View>
 
+          {/* Both figures are measured from where the responder is, so without
+              that there is nothing to show. Saying so here beats two dashes
+              and an explanation in a banner further up the page. */}
+          {!responderLocation ? (
+            <Text style={styles.hintText}>
+              {locationError
+                ? 'Distance and travel time need your location, which this browser is not sharing.'
+                : 'Finding your location to work out distance and travel time…'}
+            </Text>
+          ) : null}
+
           {statusError ? <Text style={styles.statusErrorText}>{statusError}</Text> : null}
 
           {selectedReport.outsideArea ? null : (
