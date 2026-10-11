@@ -81,6 +81,9 @@ const MARKER_ICON_BY_STATUS: Record<string, string> = {
   pending: 'http://maps.google.com/mapfiles/ms/icons/red-dot.png',
 };
 const RESPONDER_ICON = 'http://maps.google.com/mapfiles/ms/icons/blue-dot.png';
+
+/** Beyond this, a turn-by-turn route is not worth asking Google for. */
+const ROUTING_MAX_KM = 50;
 const OUTSIDE_AREA_ICON = 'http://maps.google.com/mapfiles/ms/icons/grey-dot.png';
 
 export default function MapScreen() {
@@ -295,13 +298,19 @@ export default function MapScreen() {
     );
   }, [selectedReport, isLoaded, addressCache]);
 
-  const responderInMakati = responderLocation ? isWithinMakati(responderLocation.lat, responderLocation.lng) : false;
-  const shouldRoute = !!selectedReport && !!responderLocation && responderInMakati && !directionsResult && !directionsFailed;
-
   const straightLineKm = useMemo(() => {
     if (!selectedReport || !responderLocation) return null;
     return haversineKm(responderLocation.lat, responderLocation.lng, selectedReport.lat, selectedReport.lng);
   }, [selectedReport, responderLocation]);
+
+  // Routing used to be refused whenever the responder was outside the service
+  // area, which is the wrong test: a responder a street past the boundary can
+  // still drive to the scene, and on a computer the reported position is
+  // guessed from the network and is often wrong by kilometres. What actually
+  // makes a route useless is being nowhere near, so distance is the test.
+  const tooFarToRoute = straightLineKm != null && straightLineKm > ROUTING_MAX_KM;
+  const shouldRoute =
+    !!selectedReport && !!responderLocation && !tooFarToRoute && !directionsResult && !directionsFailed;
 
   // Acts on every report in the group, so one Accept answers all the callers
   // who reported the same emergency.
@@ -506,8 +515,12 @@ export default function MapScreen() {
               {Math.round(PROXIMITY_RADIUS_KM * 1000)} m. Accepting responds to all of them.
             </Text>
           ) : null}
-          {responderLocation && !responderInMakati ? (
-            <Text style={styles.hintText}>Your current location is outside Makati City, so routing is unavailable.</Text>
+          {tooFarToRoute ? (
+            <Text style={styles.hintText}>
+              Your device places you about {straightLineKm?.toFixed(0)} km away, too far to route to this
+              incident. On a computer the location is often guessed from the network rather than read from
+              GPS, so it may simply be wrong.
+            </Text>
           ) : null}
 
           <ResponderVideoPlayer incidentId={selectedReport.incidentId} recordedVideoUrl={recordedVideoUrl} />
@@ -603,8 +616,12 @@ export default function MapScreen() {
               </Text>
             </View>
           ) : null}
-          {responderLocation && !responderInMakati ? (
-            <Text style={styles.hintText}>Your current location is outside Makati City, so routing is unavailable.</Text>
+          {tooFarToRoute ? (
+            <Text style={styles.hintText}>
+              Your device places you about {straightLineKm?.toFixed(0)} km away, too far to route to this
+              incident. On a computer the location is often guessed from the network rather than read from
+              GPS, so it may simply be wrong.
+            </Text>
           ) : null}
           {selectedReport.status === 'responding' ? (
             <Text style={styles.hintText}>Tracking your live location as you head to the scene.</Text>
