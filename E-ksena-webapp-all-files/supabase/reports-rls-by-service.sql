@@ -92,7 +92,13 @@ CREATE POLICY "Responders update own service reports" ON public.reports
     OR public.report_is_unassigned(classified_as)
     OR EXISTS (SELECT 1 FROM public.admins a WHERE a.auth_user_id = auth.uid())
   )
-  WITH CHECK (auth.role() = 'authenticated');
+  -- auth.uid(), not auth.role(). Reassignment failed with "new row violates
+  -- row-level security policy" while this read auth.role(), which evaluates to
+  -- nothing here; auth.uid() is what every working policy in this project
+  -- relies on. Still requires a signed-in caller, and USING above already
+  -- decides which rows may be touched -- this only has to let the handoff
+  -- write a classification belonging to another service.
+  WITH CHECK (auth.uid() IS NOT NULL);
 
 -- INSERT is left exactly as reports-rls-restrict.sql set it. DELETE still has
 -- no policy, which denies it to every application role.
