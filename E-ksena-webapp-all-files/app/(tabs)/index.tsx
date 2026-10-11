@@ -26,7 +26,13 @@ import {
   RoleThemes,
   type RoleThemeKey,
 } from '@/constants/theme';
-import { MAKATI_CENTER, isWithinMakati, haversineKm } from '@/lib/makati';
+import {
+  MAKATI_CENTER,
+  isWithinMakati,
+  haversineKm,
+  estimateTravelMinutes,
+  formatTravelMinutes,
+} from '@/lib/makati';
 import { GOOGLE_MAPS_API_KEY } from '@/lib/env';
 import { PrimaryButton } from '@/components/primary-button';
 import { recordDispatchAction } from '@/lib/audit';
@@ -429,7 +435,12 @@ export default function MapScreen() {
     ? addressCache[selectedReport.id] ?? `${selectedReport.lat.toFixed(5)}, ${selectedReport.lng.toFixed(5)}`
     : '';
   const distanceText = route?.distance?.text ?? (straightLineKm != null ? `~${straightLineKm.toFixed(2)} km` : '—');
-  const etaText = route?.duration?.text ?? '—';
+  // Distance already falls back to a straight-line figure when there is no
+  // route, so the travel time does too. Leaving it as a dash told a responder
+  // nothing at all in exactly the situation where they most need a number.
+  const etaText =
+    route?.duration?.text ??
+    (straightLineKm != null ? `~${formatTravelMinutes(estimateTravelMinutes(straightLineKm))}` : '—');
 
   const selectedCard = selectedReport ? (
     <View style={[styles.card, CardShadow, styles.selectedCard]}>
