@@ -144,7 +144,7 @@ export const TERMS_DOCUMENT: LegalDocumentContent = {
  */
 export const PRIVACY_DOCUMENT: LegalDocumentContent = {
   title: 'Privacy Policy',
-  effectiveDate: '10 October 2026',
+  effectiveDate: '11 October 2026',
   intro:
     'E-ksena handles emergency video, location and contact details, which are sensitive by nature. This policy explains what we collect, why, who sees it and what you can do about it. It is written to meet the right to be informed under the Data Privacy Act of 2012.',
   sections: [
@@ -163,6 +163,7 @@ export const PRIVACY_DOCUMENT: LegalDocumentContent = {
         'Your account details: name, email address, mobile number and date of birth.',
         'The time of the report, and the status it moves through as responders handle it.',
         'Audio and video exchanged during a live call with a responder, while that call is in progress.',
+        'If you report by phone or SMS instead of through the app, the responder who takes the report records what you told them, the location you described and, if you gave it, your phone number.',
       ],
     },
     {
@@ -217,8 +218,8 @@ export const PRIVACY_DOCUMENT: LegalDocumentContent = {
       ],
       bullets: [
         'Accounts are protected by a password, and the system requires a strong one.',
-        'Access to incident data is restricted at the database level, not only in the interface, so a responder can only read incidents belonging to their own service.',
-        'Responder contact details are readable only by that responder and by an administrator.',
+        'Access to incident data is restricted at the database level, not only in the interface. A responder can read only the incidents that belong to their own service, or that have not yet been matched to one.',
+        'The contact details of a responder are readable by that responder and by an administrator. When a responder is assigned to an incident, their name, unit and contact number are also shown to the responders of the service handling that incident, so that they can coordinate.',
         'Emergency records cannot be deleted from the applications.',
         'Dispatch actions are written to an audit log.',
         'Connections to the platform are encrypted in transit.',
