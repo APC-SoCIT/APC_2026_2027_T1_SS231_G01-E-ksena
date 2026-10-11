@@ -58,6 +58,11 @@ interface EmergencyReport {
   classified_as?: string;
   status: EmergencyStatus;
   timestamp?: string;
+  /**
+   * Reported from beyond the area E-ksena covers. Shown, but never dispatched:
+   * see the note where reports are loaded.
+   */
+  outsideArea: boolean;
 }
 
 function hasValidCoords(lat: number | null, lng: number | null): boolean {
@@ -76,6 +81,7 @@ const MARKER_ICON_BY_STATUS: Record<string, string> = {
   pending: 'http://maps.google.com/mapfiles/ms/icons/red-dot.png',
 };
 const RESPONDER_ICON = 'http://maps.google.com/mapfiles/ms/icons/blue-dot.png';
+const OUTSIDE_AREA_ICON = 'http://maps.google.com/mapfiles/ms/icons/grey-dot.png';
 
 export default function MapScreen() {
   const { user } = useAuth();
@@ -106,8 +112,18 @@ export default function MapScreen() {
   const visibleReports = reports;
 
   // Several callers reporting the same emergency collapse into one group, so the
-  // responder answers once instead of once per caller.
-  const groups = useMemo(() => groupNearbyReports(visibleReports), [visibleReports]);
+  // responder answers once instead of once per caller. Out-of-area reports are
+  // kept out of that: a point just across the boundary can sit within the
+  // grouping radius of a real incident, and merging the two would hide the one
+  // that cannot be dispatched behind the one that can.
+  const groups = useMemo(() => {
+    const inArea = visibleReports.filter((r) => !r.outsideArea);
+    const outside = visibleReports.filter((r) => r.outsideArea);
+    return [
+      ...groupNearbyReports(inArea),
+      ...outside.map((r) => ({ key: r.id, lead: r, members: [r], lat: r.lat, lng: r.lng })),
+    ];
+  }, [visibleReports]);
   const selectedGroup = useMemo(
     () => groups.find((g) => g.members.some((m) => m.id === selectedId)) ?? null,
     [groups, selectedId]
@@ -160,7 +176,12 @@ export default function MapScreen() {
       const lat = row.report_location_lat as number | null;
       const lng = row.report_location_lng as number | null;
       if (!hasValidCoords(lat, lng)) continue;
-      if (!isWithinMakati(lat, lng)) continue; // defensive: never dispatch/show outside Makati
+      // Reports from outside the service area used to be skipped here. Nothing
+      // rejects them on the way in, so they were accepted, stored, classified
+      // and then silently vanished: the caller believed help was coming and no
+      // responder ever knew. They are kept now and marked instead, so a
+      // responder can see one exists and tell the caller to ring 911.
+      const outsideArea = !isWithinMakati(lat, lng);
 
       locations.push({
         id: String(row.report_id ?? ''),
@@ -174,6 +195,7 @@ export default function MapScreen() {
         classified_as: row.classified_as as string | undefined,
         status: ((row.status as EmergencyStatus) ?? 'matched'),
         timestamp: row.timestamp as string | undefined,
+        outsideArea,
       });
     }
     setReports(locations);
@@ -386,7 +408,11 @@ export default function MapScreen() {
                   ? `${emergencyTypeLabel(g.lead.classified_as)} — ${g.members.length} reports in this area`
                   : emergencyTypeLabel(g.lead.classified_as)
               }
-              icon={MARKER_ICON_BY_STATUS[g.lead.status] ?? MARKER_ICON_BY_STATUS.matched}
+              icon={
+                g.lead.outsideArea
+                  ? OUTSIDE_AREA_ICON
+                  : MARKER_ICON_BY_STATUS[g.lead.status] ?? MARKER_ICON_BY_STATUS.matched
+              }
               label={
                 g.members.length > 1
                   ? { text: String(g.members.length), color: '#FFFFFF', fontWeight: '700' }
@@ -455,6 +481,15 @@ export default function MapScreen() {
             {route?.duration?.text ? <Text style={styles.etaAway}>{route.duration.text} away</Text> : null}
           </View>
           <Text style={styles.selectedDetail}>{locationText}</Text>
+          {selectedReport.outsideArea ? (
+            <View style={styles.outsideBanner}>
+              <Text style={styles.outsideBannerTitle}>Outside service area</Text>
+              <Text style={styles.outsideBannerText}>
+                This report came from beyond the area E-ksena covers, so it cannot be dispatched from here.
+                Advise the caller to ring 911 or their local emergency hotline.
+              </Text>
+            </View>
+          ) : null}
           {selectedGroup && selectedGroup.members.length > 1 ? (
             <Text style={styles.groupNote}>
               {selectedGroup.members.length} people reported this within{' '}
@@ -481,6 +516,7 @@ export default function MapScreen() {
 
           {statusError ? <Text style={styles.statusErrorText}>{statusError}</Text> : null}
 
+          {selectedReport.outsideArea ? null : (
           <View style={styles.acceptRow}>
             <View style={styles.reassignAnchor}>
               <Pressable
@@ -526,6 +562,7 @@ export default function MapScreen() {
               <Text style={styles.acceptBtnText}>Accept</Text>
             </Pressable>
           </View>
+          )}
         </>
       ) : (
         <>
@@ -536,6 +573,15 @@ export default function MapScreen() {
             </View>
           </View>
           <Text style={styles.selectedDetail}>Location: {locationText}</Text>
+          {selectedReport.outsideArea ? (
+            <View style={styles.outsideBanner}>
+              <Text style={styles.outsideBannerTitle}>Outside service area</Text>
+              <Text style={styles.outsideBannerText}>
+                This report came from beyond the area E-ksena covers, so it cannot be dispatched from here.
+                Advise the caller to ring 911 or their local emergency hotline.
+              </Text>
+            </View>
+          ) : null}
           {responderLocation && !responderInMakati ? (
             <Text style={styles.hintText}>Your current location is outside Makati City, so routing is unavailable.</Text>
           ) : null}
@@ -553,7 +599,7 @@ export default function MapScreen() {
             </Text>
           ) : null}
           {statusError ? <Text style={styles.statusErrorText}>{statusError}</Text> : null}
-          {nextStatusAction(selectedReport.status) ? (
+          {!selectedReport.outsideArea && nextStatusAction(selectedReport.status) ? (
             <Pressable
               onPress={() => selectedGroup && handleStatusAction(selectedGroup)}
               style={[styles.statusBtn, { backgroundColor: theme.primary }]}
@@ -584,7 +630,7 @@ export default function MapScreen() {
           >
             <Text style={styles.listCardTitle}>{emergencyTypeLabel(g.lead.classified_as)}</Text>
             <Text style={styles.listCardSubtitle}>
-              {EMERGENCY_STATUS_LABELS[g.lead.status]}
+              {g.lead.outsideArea ? 'Outside service area' : EMERGENCY_STATUS_LABELS[g.lead.status]}
               {g.members.length > 1 ? ` · ${g.members.length} reports in this area` : ''}
             </Text>
           </Pressable>
@@ -926,6 +972,25 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.xs,
     paddingHorizontal: Spacing.sm,
     marginBottom: Spacing.sm,
+  },
+  outsideBanner: {
+    backgroundColor: DANGER_BG,
+    borderWidth: 1,
+    borderColor: DANGER_BORDER,
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    marginTop: Spacing.sm,
+  },
+  outsideBannerTitle: {
+    fontSize: FontSizes.sm,
+    fontWeight: '700',
+    color: BRAND_RED,
+    marginBottom: Spacing.xs,
+  },
+  outsideBannerText: {
+    fontSize: FontSizes.sm,
+    color: TEXT_PRIMARY,
+    lineHeight: 20,
   },
   statusErrorText: {
     fontSize: FontSizes.xs,
