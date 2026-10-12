@@ -9,10 +9,12 @@ import VideoCameraScreen from '../screens/main/VideoCameraScreen';
 
 import TermsScreen from '../screens/legal/TermsScreen';
 import PrivacyScreen from '../screens/legal/PrivacyScreen';
+import SmsChatScreen from '../screens/main/SmsChatScreen';
 
 export type MainStackParamList = {
   MainTabs: undefined;
   CallScreen: undefined;
+  SmsChatScreen: { responderPhone?: string; incidentId?: string | null; responderName?: string } | undefined;
   Terms: undefined;
   Privacy: undefined;
 };
@@ -93,6 +95,11 @@ const MainStack: React.FC = () => {
         name="CallScreen" 
         component={require('../screens/main/CallScreen').default}
         options={{ presentation: 'modal' }} 
+      />
+      <Stack.Screen
+        name="SmsChatScreen"
+        component={SmsChatScreen}
+        options={{ headerShown: false }}
       />
       <Stack.Screen 
         name="Terms" 

@@ -310,7 +310,7 @@ export const sendVideoReport = async (
       return {
         success: false,
         report: {} as EmergencyReport,
-        message: incidentDetails.error || 'Failed to retrieve incident details from server.',
+        message: (incidentDetails as any).error || incidentDetails.message || 'Failed to retrieve incident details from server.',
       };
     }
 

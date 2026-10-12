@@ -189,23 +189,12 @@ const HomeScreen: React.FC = () => {
     (navigation as any).navigate('Video');
   };
 
-  const handleSMSFallback = async () => {
-    try {
-      const isAvailable = await SMS.isAvailableAsync();
-      if (!isAvailable) {
-        Alert.alert('SMS Not Available', 'SMS is not available on this device.');
-        return;
-      }
-
-      const { latitude, longitude } = state.location;
-      if (latitude && longitude) {
-        const message = `EMERGENCY: I need help at ${latitude}, ${longitude}. Please send assistance immediately. Incident #${responderData?.incidentId}`;
-        const smsNumber = responderData?.dispatcherPhone || '+12345678901';
-        await SMS.sendSMSAsync([smsNumber], message);
-      }
-    } catch (error) {
-      console.error('Error sending SMS:', error);
-    }
+  const handleSMSFallback = () => {
+    (navigation as any).navigate('SmsChatScreen', {
+      responderPhone: responderData?.dispatcherPhone || '+639123456789',
+      incidentId: responderData?.incidentId || null,
+      responderName: responderData?.dispatcherName || 'Emergency Dispatch',
+    });
   };
 
   const handleCallResponder = () => {

@@ -54,7 +54,7 @@ export default function CallScreen() {
       });
 
       // Handle receiving remote stream
-      pc.current.ontrack = (event) => {
+      pc.current.ontrack = (event: any) => {
         if (event.streams && event.streams[0]) {
           setRemoteStream(event.streams[0]);
           setIsConnecting(false);
@@ -62,7 +62,7 @@ export default function CallScreen() {
       };
 
       // Handle sending ICE candidates to the Web App
-      pc.current.onicecandidate = async (event) => {
+      pc.current.onicecandidate = async (event: any) => {
         if (event.candidate && channelRef.current) {
           channelRef.current.send({
             type: 'broadcast',
