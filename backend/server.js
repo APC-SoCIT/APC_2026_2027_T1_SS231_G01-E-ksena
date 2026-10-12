@@ -20,12 +20,19 @@ const app = express();
 // Middleware
 const allowedOrigins = process.env.ALLOWED_ORIGINS 
   ? process.env.ALLOWED_ORIGINS.split(',') 
-  : ['http://localhost:3000', 'http://127.0.0.1:3000'];
+  : ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:8081', 'http://localhost:5173'];
 
 app.use(cors({
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin || allowedOrigins.includes(origin) || process.env.NODE_ENV === 'development') {
+    if (
+      !origin || 
+      allowedOrigins.includes(origin) || 
+      origin.includes('vercel.app') || 
+      origin.includes('localhost') || 
+      origin.includes('127.0.0.1') ||
+      process.env.NODE_ENV === 'development'
+    ) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
@@ -536,6 +543,154 @@ app.get('/api/incident/:incidentId/responder-location', async (req, res) => {
       success: false,
       error: 'Internal server error'
     });
+  }
+});
+
+// ============================================
+// ENDPOINT: Send SMS via UniSMS (Web App / Dispatcher)
+// ============================================
+app.post('/api/sms/send', requireAuth, async (req, res) => {
+  const { phoneNumber, message, messageId } = req.body;
+
+  if (!phoneNumber || !message) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing required fields: phoneNumber, message'
+    });
+  }
+
+  const apiKey = process.env.UNISMS_API_KEY;
+  if (!apiKey) {
+    console.error('[SMS] UNISMS_API_KEY is not configured in backend environment');
+    if (messageId) {
+      await supabase
+        .from('sms_messages')
+        .update({ status: 'failed', error: 'UNISMS_API_KEY is not configured on server' })
+        .eq('id', messageId);
+    }
+    return res.status(500).json({
+      success: false,
+      error: 'UniSMS service is not configured on the server'
+    });
+  }
+
+  try {
+    console.log(`[SMS] Sending UniSMS to ${phoneNumber} (messageId: ${messageId || 'none'})...`);
+
+    const authHeader = 'Basic ' + Buffer.from(`${apiKey}:`).toString('base64');
+    const senderId = process.env.UNISMS_SENDER_ID || 'UniSMS';
+
+    const unismsResponse = await fetch('https://unismsapi.com/api/sms', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': authHeader
+      },
+      body: JSON.stringify({
+        recipient: phoneNumber,
+        content: message,
+        sender_id: senderId
+      })
+    });
+
+    const unismsResult = await unismsResponse.json();
+    console.log('[SMS] UniSMS response status:', unismsResponse.status, 'body:', unismsResult);
+
+    const isSuccess = unismsResponse.ok && (unismsResult.success !== false && !unismsResult.error);
+    const referenceId = unismsResult.id || unismsResult.data?.id || unismsResult.message_id || unismsResult.reference_id || `sms-${Date.now()}`;
+    const errorMsg = isSuccess ? null : (unismsResult.message || unismsResult.error || `HTTP ${unismsResponse.status} error`);
+
+    // Update sms_messages row if messageId was provided
+    if (messageId) {
+      try {
+        const updatePayload = isSuccess
+          ? { status: 'sent', provider_message_id: String(referenceId) }
+          : { status: 'failed', error: String(errorMsg) };
+
+        const { error: updateError } = await supabase
+          .from('sms_messages')
+          .update(updatePayload)
+          .eq('id', messageId);
+
+        if (updateError) {
+          console.error('[SMS] Failed to update sms_messages row:', updateError);
+        } else {
+          console.log(`[SMS] Updated sms_messages row ${messageId} -> ${isSuccess ? 'sent' : 'failed'}`);
+        }
+      } catch (dbErr) {
+        console.error('[SMS] DB exception updating sms_messages:', dbErr);
+      }
+    }
+
+    if (isSuccess) {
+      return res.json({
+        success: true,
+        referenceId: String(referenceId)
+      });
+    } else {
+      return res.status(unismsResponse.status >= 400 ? unismsResponse.status : 500).json({
+        success: false,
+        referenceId: null,
+        error: errorMsg
+      });
+    }
+
+  } catch (error) {
+    console.error('[SMS] Exception dispatching UniSMS:', error);
+
+    if (messageId) {
+      try {
+        await supabase
+          .from('sms_messages')
+          .update({ status: 'failed', error: error.message })
+          .eq('id', messageId);
+      } catch (dbErr) {
+        console.error('[SMS] DB exception on failure update:', dbErr);
+      }
+    }
+
+    return res.status(500).json({
+      success: false,
+      referenceId: null,
+      error: error.message || 'Internal server error while sending SMS'
+    });
+  }
+});
+
+// ============================================
+// ENDPOINT: UniSMS Inbound Webhook
+// ============================================
+app.post('/api/sms/webhook', async (req, res) => {
+  try {
+    const payload = req.body || {};
+    console.log('[SMS WEBHOOK] Inbound UniSMS webhook event:', JSON.stringify(payload));
+
+    const phone = payload.from || payload.sender || payload.phone || payload.data?.phone || payload.data?.from;
+    const body = payload.content || payload.text || payload.body || payload.data?.content || payload.data?.text;
+    const providerMessageId = payload.id || payload.message_id || payload.data?.id;
+
+    if (phone && body) {
+      const { error: insertError } = await supabase
+        .from('sms_messages')
+        .insert({
+          phone: phone,
+          body: body,
+          direction: 'inbound',
+          status: 'received',
+          provider_message_id: providerMessageId ? String(providerMessageId) : null
+        });
+
+      if (insertError) {
+        console.error('[SMS WEBHOOK] Failed to insert inbound message:', insertError);
+      } else {
+        console.log(`[SMS WEBHOOK] Successfully recorded inbound SMS from ${phone}`);
+      }
+    }
+
+    res.json({ success: true, received: true });
+  } catch (error) {
+    console.error('[SMS WEBHOOK] Error processing webhook:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
