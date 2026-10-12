@@ -16,7 +16,7 @@ app = Flask(__name__)
 IMG_SIZE = (112, 112)
 NUM_FRAMES = 16
 LABEL_NAMES = ['fire', 'police', 'medical'] # Lowercase to match Node backend
-WEIGHTS_PATH = "emergency_ai3.pth"
+WEIGHTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "emergency_ai3.pth")
 
 class EmergencyModel(nn.Module):
     def __init__(self):
@@ -57,9 +57,9 @@ def load_model():
 
         model.load_state_dict(state_dict)
         model.eval()
-        print("✅ Custom PyTorch Model loaded successfully!")
+        print("[AI SERVICE] [SUCCESS] Custom PyTorch Model loaded successfully!", flush=True)
     except Exception as e:
-        print(f"❌ Failed to load model (Is {WEIGHTS_PATH} in the backend folder?): {e}")
+        print(f"[AI SERVICE] [ERROR] Failed to load model ({WEIGHTS_PATH}): {e}", flush=True)
         model = None
 
 # Load model initially
@@ -76,43 +76,50 @@ def analyze_video():
         if not model:
             return jsonify({"error": f"AI model not loaded. Please make sure {WEIGHTS_PATH} is in the backend folder."}), 500
 
-    data = request.json
+    data = request.json or {}
     video_url = data.get('video_url')
     
     if not video_url:
         return jsonify({"error": "video_url is required"}), 400
         
-    print(f"[AI SERVICE] Analyzing video: {video_url}")
+    print(f"[AI SERVICE] Received request to analyze video: {video_url}", flush=True)
     
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
-            if video_url.startswith("http"):
-                response = requests.get(video_url, stream=True)
-                for chunk in response.iter_content(chunk_size=8192):
-                    tmp_file.write(chunk)
+        video_path = None
+        if video_url.startswith("http"):
+            print("[AI SERVICE] Downloading video...", flush=True)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
+                response = requests.get(video_url, timeout=30)
+                tmp_file.write(response.content)
                 video_path = tmp_file.name
-            else:
-                print("[AI SERVICE] Not a valid HTTP link. Simulating classification.")
-                video_path = None
+            print(f"[AI SERVICE] Downloaded video to {video_path} ({os.path.getsize(video_path)} bytes)", flush=True)
+        else:
+            print("[AI SERVICE] Not a valid HTTP link. Simulating fallback.", flush=True)
                 
-        if video_path:
-            # --- CLASSMATE'S PYTORCH PROCESSING LOGIC ---
+        if video_path and os.path.exists(video_path):
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
+                print("[AI SERVICE] Could not open video file with OpenCV", flush=True)
                 return jsonify({"error": "Could not read downloaded video"}), 500
 
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            # Sample exactly 16 evenly spaced frames
-            indices = np.linspace(0, max(0, total_frames - 1), NUM_FRAMES, dtype=int)
+            print(f"[AI SERVICE] Total frames in video: {total_frames}", flush=True)
+
+            step = max(1, total_frames // NUM_FRAMES)
             frames = []
-            for i in indices:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+            curr = 0
+            while cap.isOpened() and len(frames) < NUM_FRAMES:
                 ret, frame = cap.read()
-                if ret:
+                if not ret:
+                    break
+                if curr % step == 0:
                     frame_rgb = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), IMG_SIZE)
                     frames.append(frame_rgb)
-                else:
-                    frames.append(np.zeros((*IMG_SIZE, 3), dtype=np.uint8))
+                curr += 1
+            cap.release()
+
+            while len(frames) < NUM_FRAMES:
+                frames.append(np.zeros((*IMG_SIZE, 3), dtype=np.uint8))
 
             input_tensor = torch.from_numpy(np.array(frames)).float() / 255.0
             input_tensor = input_tensor.permute(3, 0, 1, 2).unsqueeze(0).to(device)
@@ -122,22 +129,19 @@ def analyze_video():
                 probabilities = F.softmax(outputs, dim=1)
                 confidence, predicted = torch.max(probabilities, 1)
 
-            conf_val = confidence.item()
-            pred_idx = predicted.item()
+            conf_val = float(confidence.item())
+            pred_idx = int(predicted.item())
             detected_service = LABEL_NAMES[pred_idx]
             
-            cap.release()
             try:
                 os.unlink(video_path)
             except Exception as e:
-                print(f"[AI SERVICE] Warning: could not delete temp file {video_path}: {e}")
-            
+                pass
         else:
-            # Mock behavior if it's not a real video URL
             detected_service = 'medical'
             conf_val = 0.95
 
-        print(f"[AI SERVICE] Result: {detected_service} (Confidence: {conf_val:.2f})")
+        print(f"[AI SERVICE] Classification Complete -> {detected_service} (Confidence: {conf_val:.2f})", flush=True)
         return jsonify({
             "success": True,
             "detected_service_type": detected_service,
