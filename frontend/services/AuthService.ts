@@ -40,10 +40,14 @@ export const loginWithEmailOtp = async (email: string): Promise<{ success: boole
   };
 };
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const MOCK_SESSION_KEY = '@eksena_mock_session';
+
 export const verifyEmailOtp = async (email: string, token: string): Promise<LoginResponse> => {
   // Developer Bypass for testing
   if (email.toLowerCase() === 'test@test.com' && token === '000000') {
-    return {
+    const mockResponse: LoginResponse = {
       success: true,
       user: {
         id: 'developer-test-uuid',
@@ -53,6 +57,8 @@ export const verifyEmailOtp = async (email: string, token: string): Promise<Logi
       },
       token: 'mock-jwt-token-for-testing',
     };
+    await AsyncStorage.setItem(MOCK_SESSION_KEY, JSON.stringify(mockResponse));
+    return mockResponse;
   }
 
   const { data, error } = await supabase.auth.verifyOtp({
@@ -64,6 +70,9 @@ export const verifyEmailOtp = async (email: string, token: string): Promise<Logi
   if (error || !data.session || !data.user) {
     throw new Error(error?.message || 'Invalid OTP code.');
   }
+
+  // Clear any existing mock session if real session succeeded
+  await AsyncStorage.removeItem(MOCK_SESSION_KEY).catch(() => {});
 
   const u = data.user;
 
@@ -81,9 +90,41 @@ export const verifyEmailOtp = async (email: string, token: string): Promise<Logi
 };
 
 export const logout = async (): Promise<void> => {
+  await AsyncStorage.removeItem(MOCK_SESSION_KEY).catch(() => {});
   const { error } = await supabase.auth.signOut();
   if (error) {
     throw new Error(error.message);
+  }
+};
+
+export const getCurrentSession = async (): Promise<LoginResponse | null> => {
+  try {
+    const { data: { session }, error } = await supabase.auth.getSession();
+    if (!error && session && session.user) {
+      const u = session.user;
+      return {
+        success: true,
+        user: {
+          id: u.id,
+          name: (u.user_metadata as any)?.name || (u.email as string),
+          email: (u.email as string) || '',
+          phone: (u.user_metadata as any)?.phone,
+          dateOfBirth: (u.user_metadata as any)?.dateOfBirth,
+        },
+        token: session.access_token,
+      };
+    }
+
+    // Check mock session if no Supabase session exists
+    const mockStored = await AsyncStorage.getItem(MOCK_SESSION_KEY);
+    if (mockStored) {
+      return JSON.parse(mockStored) as LoginResponse;
+    }
+
+    return null;
+  } catch (err) {
+    console.warn('[AuthService] Error getting current session:', err);
+    return null;
   }
 };
 

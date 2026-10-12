@@ -11,12 +11,12 @@ const Stack = createStackNavigator();
 
 const AppNavigator: React.FC = () => {
   const { state } = useAuth();
-  const { isAuthenticated, loading } = state.auth;
+  const { isAuthenticated, isInitializing } = state.auth;
 
-  // Show loading screen while checking authentication (Note: disabled during login to avoid unmounting the LoginScreen)
-  // if (loading) {
-  //   return <LoadingScreen />;
-  // }
+  // Show loading screen while checking for persisted session on app startup
+  if (isInitializing) {
+    return <LoadingScreen />;
+  }
 
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>

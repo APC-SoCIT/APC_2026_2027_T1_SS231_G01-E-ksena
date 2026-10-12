@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { ArrowLeft, RotateCcw, Video as VideoIcon, VideoOff } from 'lucide-react-native';
@@ -31,7 +32,8 @@ const VideoCameraScreen: React.FC = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [cameraType, setCameraType] = useState<'back' | 'front'>('back');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
 
   useEffect(() => {
@@ -39,14 +41,49 @@ const VideoCameraScreen: React.FC = () => {
     if (!micPermission?.granted) requestMic();
   }, [camPermission, micPermission]);
 
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    };
+  }, []);
+
   const toggleCameraType = () => {
     setCameraType(current => (current === 'back' ? 'front' : 'back'));
   };
 
-  const toggleRecording = () => {
+  const toggleRecording = async () => {
     if (isRecording) {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
       cameraRef.current?.stopRecording();
     } else {
+      try {
+        const noticeSeen = await AsyncStorage.getItem('@eksena_ai_recording_notice_seen');
+        if (!noticeSeen) {
+          Alert.alert(
+            'Automated AI Processing Notice',
+            'Under Section 5 of the Privacy Policy and RA 10173 (Data Privacy Act), video recorded here is automatically analyzed by an AI system to classify emergency severity and dispatched to responders.\n\nDo you consent to proceed?',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Consent & Record',
+                onPress: async () => {
+                  await AsyncStorage.setItem('@eksena_ai_recording_notice_seen', 'true');
+                  startEmergencyRecording();
+                },
+              },
+            ]
+          );
+          return;
+        }
+      } catch (err) {
+        console.warn('[VideoCameraScreen] Notice check error:', err);
+      }
+
       startEmergencyRecording();
     }
   };
@@ -56,10 +93,26 @@ const VideoCameraScreen: React.FC = () => {
     
     try {
       setIsRecording(true);
-      console.log('[FRONTEND] Starting video recording...');
+      setElapsedSeconds(0);
+      console.log('[FRONTEND] Starting video recording (10 seconds max)...');
       
-      const video = await cameraRef.current.recordAsync({ maxDuration: 60 });
+      if (timerRef.current) clearInterval(timerRef.current);
+      timerRef.current = setInterval(() => {
+        setElapsedSeconds(prev => {
+          if (prev >= 10) {
+            if (timerRef.current) clearInterval(timerRef.current);
+            return 10;
+          }
+          return prev + 1;
+        });
+      }, 1000);
+
+      const video = await cameraRef.current.recordAsync({ maxDuration: 10 });
       
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
       setIsRecording(false);
       setIsAnalyzing(true);
       console.log('[FRONTEND] Recording finished. Uploading to Supabase...', video?.uri);
@@ -112,6 +165,10 @@ const VideoCameraScreen: React.FC = () => {
       ]);
       
     } catch (err) {
+       if (timerRef.current) {
+         clearInterval(timerRef.current);
+         timerRef.current = null;
+       }
        console.error('Recording/Upload Error:', err);
        setIsRecording(false);
        setIsAnalyzing(false);
@@ -167,10 +224,18 @@ const VideoCameraScreen: React.FC = () => {
         />
 
         {isRecording && (
-          <View style={styles.recordingIndicator}>
-            <View style={styles.recordingDot} />
-            <Text style={styles.recordingText}>RECORDING</Text>
-          </View>
+          <>
+            <View style={styles.recordingIndicator}>
+              <View style={styles.recordingDot} />
+              <Text style={styles.recordingText}>
+                REC {elapsedSeconds < 10 ? `00:0${elapsedSeconds}` : `00:${elapsedSeconds}`} / 00:10
+              </Text>
+            </View>
+
+            <View style={styles.progressBarBackground}>
+              <View style={[styles.progressBarFill, { width: `${Math.min(100, (elapsedSeconds / 10) * 100)}%` }]} />
+            </View>
+          </>
         )}
 
         {isAnalyzing && (
@@ -199,7 +264,9 @@ const VideoCameraScreen: React.FC = () => {
           )}
         </TouchableOpacity>
         <Text style={styles.instructionText}>
-          {isRecording ? 'Recording emergency clip...' : 'Tap to START RECORDING'}
+          {isRecording
+            ? `Recording clip... ${Math.max(0, 10 - elapsedSeconds)}s remaining`
+            : 'Tap to START RECORDING (10s max)'}
         </Text>
       </View>
     </SafeAreaView>
@@ -223,9 +290,33 @@ const styles = StyleSheet.create({
   aiAlert: { backgroundColor: 'rgba(0, 0, 0, 0.8)', paddingHorizontal: 30, paddingVertical: 24, borderRadius: 16, alignItems: 'center' },
   aiAlertText: { color: '#ffffff', fontSize: 20, fontWeight: 'bold', marginTop: 12, marginBottom: 4 },
   aiSubText: { color: '#ffffff', fontSize: 14, opacity: 0.9, textAlign: 'center' },
-  recordingIndicator: { position: 'absolute', top: 20, left: 20, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(220, 38, 38, 0.9)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
-  recordingDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#ffffff', marginRight: 8 },
-  recordingText: { color: '#ffffff', fontSize: 12, fontWeight: 'bold' },
+  recordingIndicator: { 
+    position: 'absolute', 
+    top: 16, 
+    left: 16, 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    backgroundColor: 'rgba(220, 38, 38, 0.95)', 
+    paddingHorizontal: 14, 
+    paddingVertical: 8, 
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  recordingDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#ffffff', marginRight: 8 },
+  recordingText: { color: '#ffffff', fontSize: 13, fontWeight: '700', letterSpacing: 0.5 },
+  progressBarBackground: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 6,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: '#dc2626',
+  },
   controlsContainer: { padding: 20, alignItems: 'center', backgroundColor: 'rgba(0, 0, 0, 0.7)' },
   recordButton: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#dc2626', justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
   recordButtonActive: { backgroundColor: '#ef4444' },

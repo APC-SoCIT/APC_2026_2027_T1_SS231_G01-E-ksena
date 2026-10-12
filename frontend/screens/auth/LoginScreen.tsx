@@ -1,6 +1,6 @@
 import { useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
-import { Lock, Mail, Shield } from 'lucide-react-native';
+import { CheckSquare, Lock, Mail, Shield, Square } from 'lucide-react-native';
 import React, { useState } from 'react';
 import {
   Alert,
@@ -27,8 +27,22 @@ const LoginScreen: React.FC = () => {
   const [otpCode, setOtpCode] = useState('');
   const [step, setStep] = useState<'email' | 'otp'>('email');
   const [isLoading, setIsLoading] = useState(false);
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
 
   const handleSendOtp = async () => {
+    if (!acceptedTerms) {
+      Alert.alert(
+        'Consent Required',
+        'Under the Data Privacy Act, you must review and agree to the Terms and Conditions and Privacy Policy before proceeding.',
+        [
+          { text: 'Terms', onPress: () => navigation.navigate('Terms') },
+          { text: 'Privacy', onPress: () => navigation.navigate('Privacy') },
+          { text: 'OK', style: 'cancel' },
+        ]
+      );
+      return;
+    }
+
     if (!email.trim()) {
       Alert.alert('Error', 'Please enter your email address');
       return;
@@ -48,6 +62,14 @@ const LoginScreen: React.FC = () => {
   };
 
   const handleVerifyOtp = async () => {
+    if (!acceptedTerms) {
+      Alert.alert(
+        'Consent Required',
+        'You must review and agree to the Terms and Conditions and Privacy Policy before logging in.'
+      );
+      return;
+    }
+
     if (!otpCode.trim() || otpCode.length !== 6) {
       Alert.alert('Error', 'Please enter the 6-digit code');
       return;
@@ -97,8 +119,8 @@ const LoginScreen: React.FC = () => {
                 />
                 <TouchableOpacity 
                   onPress={handleSendOtp} 
-                  disabled={isLoading || !email.trim()}
-                  style={styles.sendCodeBtn}
+                  disabled={isLoading || !email.trim() || !acceptedTerms}
+                  style={[styles.sendCodeBtn, (!acceptedTerms || !email.trim()) && styles.sendCodeBtnDisabled]}
                 >
                   <Text style={styles.sendCodeText}>
                     {isLoading && step === 'email' ? 'Sending...' : 'Send code'}
@@ -122,10 +144,37 @@ const LoginScreen: React.FC = () => {
               </View>
             </View>
 
+            {/* Terms and Privacy Consent Checkbox */}
+            <View style={styles.consentContainer}>
+              <TouchableOpacity 
+                style={styles.checkboxTouchable} 
+                onPress={() => setAcceptedTerms(!acceptedTerms)}
+                hitSlop={8}
+                activeOpacity={0.7}
+              >
+                {acceptedTerms ? (
+                  <CheckSquare size={20} color="#dc2626" />
+                ) : (
+                  <Square size={20} color="#9ca3af" />
+                )}
+              </TouchableOpacity>
+              <Text style={styles.consentText}>
+                I have read and agree to the{' '}
+                <Text style={styles.legalLink} onPress={() => navigation.navigate('Terms')}>
+                  Terms & Conditions
+                </Text>
+                {' '}and{' '}
+                <Text style={styles.legalLink} onPress={() => navigation.navigate('Privacy')}>
+                  Privacy Policy
+                </Text>
+                .
+              </Text>
+            </View>
+
             <TouchableOpacity
-              style={[styles.loginButton, (isLoading || !otpCode.trim()) && styles.loginButtonDisabled]}
+              style={[styles.loginButton, (isLoading || !otpCode.trim() || !acceptedTerms) && styles.loginButtonDisabled]}
               onPress={handleVerifyOtp}
-              disabled={isLoading || !otpCode.trim()}
+              disabled={isLoading || !otpCode.trim() || !acceptedTerms}
             >
               <Text style={styles.loginButtonText}>
                 {isLoading && step === 'otp' ? 'Verifying...' : 'Login'}
@@ -251,6 +300,30 @@ const styles = StyleSheet.create({
     color: '#dc2626',
     fontSize: 14,
     fontWeight: '600',
+  },
+  sendCodeBtnDisabled: {
+    opacity: 0.5,
+  },
+  consentContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginVertical: 14,
+    paddingHorizontal: 2,
+    gap: 10,
+  },
+  checkboxTouchable: {
+    paddingTop: 2,
+  },
+  consentText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 19,
+    color: '#4b5563',
+  },
+  legalLink: {
+    color: '#dc2626',
+    fontWeight: '600',
+    textDecorationLine: 'underline',
   },
   successText: {
     color: '#16a34a',

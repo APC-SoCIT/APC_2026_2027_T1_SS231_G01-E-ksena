@@ -1,6 +1,7 @@
 import React, { createContext, ReactNode, useContext, useReducer, useEffect, useState } from 'react';
-import { loginWithEmailOtp, verifyEmailOtp, logout as authLogout } from '../services/AuthService';
+import { loginWithEmailOtp, verifyEmailOtp, logout as authLogout, getCurrentSession } from '../services/AuthService';
 import { onPendingResponderRoute, ResponderRoutePayload } from '../services/ReportService';
+import { supabase } from '../services/supabaseClient';
 
 // Auth State Interface
 interface AuthState {
@@ -14,6 +15,7 @@ interface AuthState {
   isAuthenticated: boolean;
   token: string | null;
   loading: boolean;
+  isInitializing: boolean;
   error: string | null;
 }
 
@@ -37,7 +39,8 @@ type AuthAction =
   | { type: 'LOGIN_FAILURE'; payload: string }
   | { type: 'LOGOUT' }
   | { type: 'CLEAR_ERROR' }
-  | { type: 'SET_LOADING'; payload: boolean };
+  | { type: 'SET_LOADING'; payload: boolean }
+  | { type: 'SET_INITIALIZED'; payload?: { user: AuthState['user']; token: string } | null };
 
 type LocationAction = 
   | { type: 'SET_LOCATION'; payload: { latitude: number; longitude: number; address?: string } }
@@ -52,6 +55,7 @@ const initialState: AppState = {
     isAuthenticated: false,
     token: null,
     loading: false,
+    isInitializing: true,
     error: null,
   },
   location: {
@@ -70,6 +74,7 @@ const authReducer = (state: AuthState, action: AuthAction): AuthState => {
       return {
         ...state,
         loading: false,
+        isInitializing: false,
         isAuthenticated: true,
         user: action.payload.user,
         token: action.payload.token,
@@ -79,6 +84,7 @@ const authReducer = (state: AuthState, action: AuthAction): AuthState => {
       return {
         ...state,
         loading: false,
+        isInitializing: false,
         isAuthenticated: false,
         user: null,
         token: null,
@@ -87,10 +93,29 @@ const authReducer = (state: AuthState, action: AuthAction): AuthState => {
     case 'LOGOUT':
       return {
         ...state,
+        isInitializing: false,
         isAuthenticated: false,
         user: null,
         token: null,
         error: null,
+      };
+    case 'SET_INITIALIZED':
+      if (action.payload) {
+        return {
+          ...state,
+          isInitializing: false,
+          isAuthenticated: true,
+          user: action.payload.user,
+          token: action.payload.token,
+          error: null,
+        };
+      }
+      return {
+        ...state,
+        isInitializing: false,
+        isAuthenticated: false,
+        user: null,
+        token: null,
       };
     case 'CLEAR_ERROR':
       return { ...state, error: null };
@@ -149,6 +174,64 @@ interface AuthProviderProps {
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const [pendingResponderRoute, setPendingResponderRoute] = useState<ResponderRoutePayload | null>(null);
+
+  // Restore persisted session on app launch
+  useEffect(() => {
+    let isMounted = true;
+
+    const initAuth = async () => {
+      try {
+        const sessionData = await getCurrentSession();
+        if (!isMounted) return;
+        if (sessionData && sessionData.user && sessionData.token) {
+          console.log('[AuthContext] Restored active session for:', sessionData.user.email);
+          dispatch({
+            type: 'SET_INITIALIZED',
+            payload: { user: sessionData.user, token: sessionData.token },
+          });
+        } else {
+          console.log('[AuthContext] No active session found');
+          dispatch({ type: 'SET_INITIALIZED', payload: null });
+        }
+      } catch (err) {
+        console.warn('[AuthContext] Session initialization error:', err);
+        if (isMounted) {
+          dispatch({ type: 'SET_INITIALIZED', payload: null });
+        }
+      }
+    };
+
+    initAuth();
+
+    // Listen to Supabase auth events (e.g. token refreshed, logged out)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!isMounted) return;
+      console.log('[AuthContext] onAuthStateChange event:', event);
+      if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && session?.user) {
+        const u = session.user;
+        dispatch({
+          type: 'LOGIN_SUCCESS',
+          payload: {
+            user: {
+              id: u.id,
+              name: (u.user_metadata as any)?.name || (u.email as string),
+              email: (u.email as string) || '',
+              phone: (u.user_metadata as any)?.phone,
+              dateOfBirth: (u.user_metadata as any)?.dateOfBirth,
+            },
+            token: session.access_token,
+          },
+        });
+      } else if (event === 'SIGNED_OUT') {
+        dispatch({ type: 'LOGOUT' });
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      subscription?.unsubscribe();
+    };
+  }, []);
 
   // Subscribe to responder route updates at app level (runs once on mount)
   useEffect(() => {

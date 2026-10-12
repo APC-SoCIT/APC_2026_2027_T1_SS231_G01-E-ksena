@@ -1,4 +1,4 @@
-import { Calendar, Edit3, LogOut, Mail, Phone, User } from 'lucide-react-native';
+import { Calendar, Edit3, FileText, LogOut, Mail, Phone, ShieldCheck, User } from 'lucide-react-native';
 import React, { useState } from 'react';
 import {
     Alert,
@@ -10,9 +10,11 @@ import {
     View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import { useAuth } from '../../context/AuthContext';
 
 const ProfileScreen: React.FC = () => {
+  const navigation = useNavigation();
   const { state, logout } = useAuth();
   const { user } = state.auth;
 
@@ -189,12 +191,34 @@ const ProfileScreen: React.FC = () => {
           )}
 
           {!isEditing && (
-            <TouchableOpacity style={[styles.actionButton, styles.logoutButton]} onPress={handleLogout}>
-              <View style={styles.actionIcon}>
-                <LogOut size={20} color="#dc2626" />
-              </View>
-              <Text style={styles.actionText}>Logout</Text>
-            </TouchableOpacity>
+            <>
+              <TouchableOpacity 
+                style={styles.actionButton} 
+                onPress={() => (navigation as any).navigate('Terms')}
+              >
+                <View style={styles.actionIcon}>
+                  <FileText size={20} color="#dc2626" />
+                </View>
+                <Text style={styles.actionText}>Terms and Conditions</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={styles.actionButton} 
+                onPress={() => (navigation as any).navigate('Privacy')}
+              >
+                <View style={styles.actionIcon}>
+                  <ShieldCheck size={20} color="#dc2626" />
+                </View>
+                <Text style={styles.actionText}>Privacy Policy</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={[styles.actionButton, styles.logoutButton]} onPress={handleLogout}>
+                <View style={styles.actionIcon}>
+                  <LogOut size={20} color="#dc2626" />
+                </View>
+                <Text style={styles.actionText}>Logout</Text>
+              </TouchableOpacity>
+            </>
           )}
         </View>
 

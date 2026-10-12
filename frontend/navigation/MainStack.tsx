@@ -7,8 +7,14 @@ import HomeScreen from '../screens/main/HomeScreen';
 import ProfileScreen from '../screens/main/ProfileScreen';
 import VideoCameraScreen from '../screens/main/VideoCameraScreen';
 
+import TermsScreen from '../screens/legal/TermsScreen';
+import PrivacyScreen from '../screens/legal/PrivacyScreen';
+
 export type MainStackParamList = {
   MainTabs: undefined;
+  CallScreen: undefined;
+  Terms: undefined;
+  Privacy: undefined;
 };
 
 export type MainTabParamList = {
@@ -86,7 +92,17 @@ const MainStack: React.FC = () => {
       <Stack.Screen 
         name="CallScreen" 
         component={require('../screens/main/CallScreen').default}
-        options={{ presentation: 'fullScreenModal' }} 
+        options={{ presentation: 'modal' }} 
+      />
+      <Stack.Screen 
+        name="Terms" 
+        component={TermsScreen} 
+        options={{ title: 'Terms and Conditions' }} 
+      />
+      <Stack.Screen 
+        name="Privacy" 
+        component={PrivacyScreen} 
+        options={{ title: 'Privacy Policy' }} 
       />
     </Stack.Navigator>
   );
