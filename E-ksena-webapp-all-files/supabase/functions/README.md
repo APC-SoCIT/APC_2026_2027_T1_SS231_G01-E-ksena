@@ -1,5 +1,12 @@
 # Connecting SMS (UniSMS)
 
+> **Not in use.** The team's backend now does the sending and holds the UniSMS
+> key: the dashboard calls its `POST /api/sms/send` (see `requestSmsSend` in
+> `lib/sms-messages.ts`), and its `/api/sms/webhook` receives replies. Do not
+> deploy `send-sms` alongside it, or there will be two senders. These two
+> functions are kept only as a fallback until the backend path has been proven
+> with real texts in both directions.
+
 The Messages tab already saves every message a responder writes, and Accept on
 the Map already queues a text for each reporter. These two functions are what
 turn a saved message into a real text, and a reply into a line in the thread.

@@ -409,15 +409,21 @@ export default function MapScreen() {
     // Accepting answers every caller behind the card, so each of them is told,
     // separately. The status is already saved by now: a text that cannot be
     // sent is reported, but it does not undo the Accept.
+    //
+    // Not waited for. The texts go out through the backend, which can take
+    // most of a minute to answer after a quiet spell, and the next step of the
+    // response must not be held up behind them. A second Accept cannot follow
+    // while they are in flight: the card has already moved on to its next
+    // action, and the database refuses a second text for the same report.
     if (action.next === 'responding') {
       setReporterNote({ groupKey: group.key, text: 'Letting the reporters know…' });
-      try {
-        const notice = await notifyReportersAccepted(ids);
-        setReporterNote({ groupKey: group.key, text: describeNotice(notice) });
-      } catch (err: unknown) {
-        const reason = err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : String(err);
-        setReporterNote({ groupKey: group.key, text: `The reporters could not be texted: ${reason}` });
-      }
+      notifyReportersAccepted(ids).then(
+        (notice) => setReporterNote({ groupKey: group.key, text: describeNotice(notice) }),
+        (err: unknown) => {
+          const reason = err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : String(err);
+          setReporterNote({ groupKey: group.key, text: `The reporters could not be texted: ${reason}` });
+        }
+      );
     }
   };
 

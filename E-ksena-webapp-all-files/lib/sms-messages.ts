@@ -88,7 +88,7 @@ export async function saveSmsContact(input: { phone: string; name: string; role:
 /**
  * Saves a message as queued and returns its id. It does not send anything:
  * the SMS provider key is a secret and cannot live in a web page, so the
- * dashboard queues and the send-sms function delivers.
+ * dashboard queues and the backend delivers.
  */
 export async function queueSmsMessage(input: {
   phone: string;
@@ -118,20 +118,73 @@ export async function queueSmsMessage(input: {
 }
 
 /**
- * Asks the send-sms function to deliver a queued message. `connected` is false
- * when the function is not deployed or has no UniSMS key yet, in which case
- * the message simply stays queued. Once the function is live this starts
- * returning true with no change here, which is the whole point of the split.
+ * The team's backend, which holds the UniSMS key and does the sending. This is
+ * an address, not a secret, so it can sit in the page. EXPO_PUBLIC_SMS_API_URL
+ * replaces it, for pointing a build at a backend running somewhere else.
+ */
+const SMS_BACKEND_URL = (
+  process.env.EXPO_PUBLIC_SMS_API_URL || 'https://apc-2026-2027-t1-ss231-g01-e-ksena.onrender.com'
+).replace(/\/+$/, '');
+
+/**
+ * How long one send may take. Generous on purpose: the backend goes to sleep
+ * when nobody has called it for a while, and its first answer after that can
+ * take most of a minute.
+ */
+const SEND_TIMEOUT_MS = 75000;
+
+/**
+ * Wakes the backend ahead of the first message, so that message is not the
+ * one that has to wait for it. Nothing depends on the answer.
+ */
+export function wakeSmsBackend(): void {
+  fetch(`${SMS_BACKEND_URL}/health`).catch(() => undefined);
+}
+
+/**
+ * Asks the backend to deliver a queued message. The backend sends it through
+ * UniSMS and marks the row sent or failed itself, so the outcome arrives on
+ * the message, not here.
+ *
+ * `connected` is false when there is no working sender to hand it to: the
+ * backend cannot be reached, does not answer in time, has no UniSMS key, or
+ * does not accept this login. The message then stays as it was saved.
  */
 export async function requestSmsSend(messageId: string): Promise<{ connected: boolean }> {
   try {
-    const { error } = await supabase.functions.invoke('send-sms', { body: { message_id: messageId } });
-    if (!error) return { connected: true };
-    // A reply from UniSMS that it refused the message still means the link
-    // works; the reason is on the message itself. Anything else means there
-    // is no working sender behind the function yet.
-    const status = (error as { context?: { status?: number } }).context?.status;
-    return { connected: status === 502 || status === 409 };
+    const { data: auth } = await supabase.auth.getSession();
+    const token = auth.session?.access_token;
+    if (!token) return { connected: false };
+
+    // The number and the text are read back from the saved row, not passed in
+    // by the caller, so what goes out is exactly what was put on record.
+    const { data: row, error } = await supabase
+      .from('sms_messages')
+      .select('phone, body')
+      .eq('id', messageId)
+      .single();
+    if (error || !row) return { connected: false };
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+    try {
+      const response = await fetch(`${SMS_BACKEND_URL}/api/sms/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ phoneNumber: row.phone, message: row.body, messageId }),
+        signal: controller.signal,
+      });
+      if (response.ok) return { connected: true };
+      // UniSMS turning one message down - a number it will not text, say -
+      // comes back as a 4xx with the reason written on the message, and the
+      // link itself is fine. A refused login, a missing endpoint or any
+      // failure inside the backend means there is no working sender.
+      const refusedByProvider =
+        response.status >= 400 && response.status < 500 && ![401, 403, 404].includes(response.status);
+      return { connected: refusedByProvider };
+    } finally {
+      clearTimeout(timer);
+    }
   } catch {
     return { connected: false };
   }

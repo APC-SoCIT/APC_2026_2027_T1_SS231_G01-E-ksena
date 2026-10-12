@@ -23,6 +23,7 @@ import {
   fetchSmsMessages,
   queueSmsMessage,
   requestSmsSend,
+  wakeSmsBackend,
   saveSmsContact,
   smsClock,
   smsDay,
@@ -114,6 +115,10 @@ export function SmsMessenger() {
   }, []);
 
   useEffect(() => {
+    wakeSmsBackend();
+  }, []);
+
+  useEffect(() => {
     load();
     // A reply, a message being marked sent or a renamed contact shows up without a reload.
     const channel = supabase
@@ -190,11 +195,13 @@ export function SmsMessenger() {
       setComposing(false);
       setActivePhone(phone);
       await load();
-      // Saved first, delivered second: if delivery is not available the
-      // message is still on record and goes out when it is.
-      const { connected } = await requestSmsSend(id);
-      setSenderOffline(!connected);
-      await load();
+      // Saved first, delivered second, and the delivery is not waited for.
+      // The backend can take most of a minute to answer after a quiet spell,
+      // and the next message should not have to queue up behind this one.
+      requestSmsSend(id).then(({ connected }) => {
+        setSenderOffline(!connected);
+        load();
+      });
     } catch (err: unknown) {
       setSendError(errorText(err));
     } finally {
