@@ -3,6 +3,7 @@ import { View, Text, ScrollView, TextInput, StyleSheet, Pressable, ActivityIndic
 import { GoogleMap, Marker, useJsApiLoader } from '@react-google-maps/api';
 import { supabase } from '@/lib/supabase';
 import { PrimaryButton } from '@/components/primary-button';
+import { SmsConversations } from '@/components/sms-conversations';
 import { useRoleTheme } from '@/context/role-theme';
 import {
   Spacing,
@@ -34,6 +35,8 @@ const REPORTABLE_TYPES = EMERGENCY_TYPES.filter((t) => t.key !== 'accident' && t
 
 export default function ExploreScreen() {
   const theme = useRoleTheme();
+  // The report form stays the first thing shown; conversations are one tap away.
+  const [view, setView] = useState<'log' | 'chat'>('log');
   const [emergencyType, setEmergencyType] = useState<string | null>(null);
   const [phone, setPhone] = useState<string>('');
   const [message, setMessage] = useState<string>('');
@@ -138,6 +141,35 @@ export default function ExploreScreen() {
 
   return (
     <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+      <View style={styles.viewTabs}>
+        {(
+          [
+            { key: 'log', label: 'Log incoming report' },
+            { key: 'chat', label: 'Conversations' },
+          ] as const
+        ).map((tab) => {
+          const active = view === tab.key;
+          return (
+            <Pressable
+              key={tab.key}
+              onPress={() => setView(tab.key)}
+              style={[styles.viewTab, active && { borderColor: theme.primary, backgroundColor: WHITE }]}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: active }}
+            >
+              <Text style={[styles.viewTabText, active && { color: theme.primary, fontWeight: '600' }]}>
+                {tab.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      {view === 'chat' ? (
+        <View style={[styles.card, CardShadow]}>
+          <SmsConversations />
+        </View>
+      ) : (
       <View style={[styles.card, CardShadow]}>
         <Text style={styles.title}>Log Incoming Report</Text>
         <Text style={styles.subtitle}>
@@ -228,11 +260,31 @@ export default function ExploreScreen() {
           disabled={submitting}
         />
       </View>
+      )}
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
+  viewTabs: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+    width: '100%',
+  },
+  viewTab: {
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: OFF_WHITE,
+  },
+  viewTabText: {
+    fontSize: FontSizes.sm,
+    fontWeight: '500',
+    color: TEXT_SECONDARY,
+  },
   container: {
     flexGrow: 1,
     padding: Spacing.lg,

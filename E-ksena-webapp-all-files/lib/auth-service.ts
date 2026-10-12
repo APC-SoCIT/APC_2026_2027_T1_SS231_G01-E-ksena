@@ -2,7 +2,7 @@ import { isAuthSessionMissingError } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 import type { RoleThemeKey } from '@/constants/theme';
 
-const SERVICE_TYPE_BY_ROLE: Record<RoleThemeKey, 'fire' | 'medical' | 'police'> = {
+export const SERVICE_TYPE_BY_ROLE: Record<RoleThemeKey, 'fire' | 'medical' | 'police'> = {
   firefighter: 'fire',
   medic: 'medical',
   police: 'police',
