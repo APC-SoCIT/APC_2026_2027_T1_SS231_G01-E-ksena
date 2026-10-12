@@ -1,22 +1,28 @@
-// Sends one queued SMS through PhilSMS.
+// Sends one queued SMS through UniSMS (unismsapi.com).
 //
-// The dashboard cannot do this itself: the PhilSMS token is a secret, and
+// The dashboard cannot do this itself: the UniSMS secret key is a secret, and
 // anything a web page holds is public. So the dashboard saves the message to
 // sms_messages as 'queued' and calls this function with its id.
 //
 // Secrets this function needs (Supabase > Edge Functions > Secrets):
-//   PHILSMS_API_TOKEN   the API token from the PhilSMS dashboard
-//   PHILSMS_SENDER_ID   the sender name registered with PhilSMS
-//   PHILSMS_API_URL     optional; overrides the endpoint below
+//   UNISMS_SECRET_KEY       the API secret key from the UniSMS dashboard
+//   UNISMS_VIRTUAL_NUMBER   your UniSMS virtual number, such as +639171234567.
+//                           A text sent from it can be replied to, which is
+//                           what makes the Messages tab a two-way chat.
+//   UNISMS_SENDER_ID        your registered sender ID. Used only when no
+//                           virtual number is set. A text sent under a name
+//                           cannot be replied to, so the chat is one-way.
 //
-// Without the first two it answers "not_configured" and sends nothing, which
-// the dashboard shows as "SMS is not connected yet".
+// Without the key and one of the other two it answers "not_configured" and
+// sends nothing, which the dashboard shows as "SMS is not connected yet".
 //
-// The request format follows the PhilSMS v3 API as published. It has not been
-// run against a live account, so check the first real message end to end.
+// Written from the UniSMS documentation: the address, the Basic sign-in with
+// the key as the user name, and the field names. It has not been run against
+// a live account, so check the first real message end to end.
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
-const DEFAULT_API_URL = 'https://app.philsms.com/api/v3/sms/send';
+const SENDER_ID_URL = 'https://unismsapi.com/api/sms';
+const VIRTUAL_NUMBER_URL = 'https://unismsapi.com/api/virtual_numbers/sms';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -27,12 +33,17 @@ function reply(body: Record<string, unknown>, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { ...cors, 'Content-Type': 'application/json' } });
 }
 
+function asText(value: unknown): string {
+  return typeof value === 'string' ? value : JSON.stringify(value);
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
 
-  const token = Deno.env.get('PHILSMS_API_TOKEN');
-  const senderId = Deno.env.get('PHILSMS_SENDER_ID');
-  if (!token || !senderId) return reply({ sent: false, reason: 'not_configured' }, 503);
+  const secretKey = Deno.env.get('UNISMS_SECRET_KEY');
+  const virtualNumber = Deno.env.get('UNISMS_VIRTUAL_NUMBER');
+  const senderId = Deno.env.get('UNISMS_SENDER_ID');
+  if (!secretKey || (!virtualNumber && !senderId)) return reply({ sent: false, reason: 'not_configured' }, 503);
 
   const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 
@@ -60,24 +71,41 @@ Deno.serve(async (req) => {
     .maybeSingle();
   if (!claimed) return reply({ sent: false, reason: 'not_queued' }, 409);
 
+  // From the virtual number when there is one, so the caller can answer.
+  const request = virtualNumber
+    ? { url: VIRTUAL_NUMBER_URL, body: { from: virtualNumber, to: claimed.phone, content: claimed.body } }
+    : {
+        url: SENDER_ID_URL,
+        body: {
+          recipient: claimed.phone,
+          content: claimed.body,
+          sender_id: senderId,
+          metadata: { sms_message_id: claimed.id },
+        },
+      };
+
   let ok = false;
   let providerId: string | null = null;
   let failure = '';
   try {
-    const res = await fetch(Deno.env.get('PHILSMS_API_URL') ?? DEFAULT_API_URL, {
+    const res = await fetch(request.url, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({
-        recipient: claimed.phone.replace(/^\+/, ''),
-        sender_id: senderId,
-        type: 'plain',
-        message: claimed.body,
-      }),
+      // UniSMS signs in with the secret key as the user name and no password.
+      headers: {
+        Authorization: `Basic ${btoa(`${secretKey}:`)}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(request.body),
     });
     const payload = await res.json().catch(() => null);
-    ok = res.ok && payload?.status === 'success';
-    providerId = payload?.data?.uid ?? payload?.data?.id ?? null;
-    if (!ok) failure = String(payload?.message ?? `PhilSMS answered HTTP ${res.status}`);
+    const message = payload?.message ?? payload ?? {};
+    ok = res.ok && message.status !== 'failed';
+    const reference = message.reference_id ?? payload?.id ?? null;
+    providerId = reference ? String(reference) : null;
+    if (!ok) {
+      failure = asText(message.fail_reason ?? payload?.errors ?? payload?.error ?? `UniSMS answered HTTP ${res.status}`);
+    }
   } catch (err) {
     failure = err instanceof Error ? err.message : String(err);
   }
@@ -86,7 +114,7 @@ Deno.serve(async (req) => {
     .from('sms_messages')
     .update(
       ok
-        ? { status: 'sent', provider_message_id: providerId ? String(providerId) : null, error: null }
+        ? { status: 'sent', provider_message_id: providerId, error: null }
         : { status: 'failed', provider_message_id: null, error: failure.slice(0, 300) }
     )
     .eq('id', claimed.id);

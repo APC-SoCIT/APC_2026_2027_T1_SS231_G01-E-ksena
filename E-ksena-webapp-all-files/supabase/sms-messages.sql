@@ -16,14 +16,14 @@
 --
 --   Outgoing  The dashboard inserts a row with direction 'outbound' and status
 --             'queued', then asks the send-sms function to deliver it. The
---             function sends it through PhilSMS and sets status to 'sent' with
+--             function sends it through UniSMS and sets status to 'sent' with
 --             provider_message_id, or to 'failed' with the reason in error.
---   Incoming  PhilSMS calls the sms-inbound function with each reply, and it
+--   Incoming  UniSMS calls the sms-inbound function with each reply, and it
 --             inserts a row with direction 'inbound' and status 'received',
 --             copying service_type from the newest outbound row to that number.
 --
 -- The functions use the service-role key, so the policies below do not bind
--- them. Until they are deployed and given a PhilSMS token, a message written
+-- them. Until they are deployed and given a UniSMS key, a message written
 -- on the dashboard stays 'queued' and no text reaches a phone. The dashboard
 -- says so on screen. supabase/functions/README.md has the steps.
 --

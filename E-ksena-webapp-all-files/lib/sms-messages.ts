@@ -119,7 +119,7 @@ export async function queueSmsMessage(input: {
 
 /**
  * Asks the send-sms function to deliver a queued message. `connected` is false
- * when the function is not deployed or has no PhilSMS token yet, in which case
+ * when the function is not deployed or has no UniSMS key yet, in which case
  * the message simply stays queued. Once the function is live this starts
  * returning true with no change here, which is the whole point of the split.
  */
@@ -127,7 +127,7 @@ export async function requestSmsSend(messageId: string): Promise<{ connected: bo
   try {
     const { error } = await supabase.functions.invoke('send-sms', { body: { message_id: messageId } });
     if (!error) return { connected: true };
-    // A reply from PhilSMS that it refused the message still means the link
+    // A reply from UniSMS that it refused the message still means the link
     // works; the reason is on the message itself. Anything else means there
     // is no working sender behind the function yet.
     const status = (error as { context?: { status?: number } }).context?.status;
