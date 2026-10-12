@@ -138,6 +138,53 @@ export async function requestSmsSend(messageId: string): Promise<{ connected: bo
 }
 
 /**
+ * The text a reporter gets when a responder accepts their report. Kept under
+ * 160 characters so it goes out as one SMS, and it repeats the one thing that
+ * must not be lost: a text is not a guarantee, so call 911 if in danger.
+ */
+export const ACCEPTED_SMS =
+  'E-ksena: We received your emergency report and a responder is on the way. Stay somewhere safe and keep your phone on. If in immediate danger, call 911.';
+
+export type AcceptanceNotice = {
+  /** How many people a text was queued for. One each, however many reports they filed. */
+  texted: number;
+  /** Reports whose reporter has no usable phone number on record. */
+  withoutNumber: number;
+  /** False when the account accepting has no active responder record to send as. */
+  hasSender: boolean;
+  /** Whether the texts were actually handed to the SMS service. Null when there was nothing to send. */
+  connected: boolean | null;
+};
+
+/**
+ * Tells everyone behind a set of reports that a responder is on the way: one
+ * text each, sent separately, so nobody learns who else reported. The numbers
+ * are looked up in the database, because the dashboard is not allowed to read
+ * them, and a reporter already told about a report is not told again.
+ */
+export async function notifyReportersAccepted(reportIds: string[]): Promise<AcceptanceNotice> {
+  const { data, error } = await supabase.rpc('notify_reporters_accepted', {
+    report_ids: reportIds,
+    message: ACCEPTED_SMS,
+  });
+  if (error) {
+    const missing = /notify_reporters_accepted|schema cache/i.test(error.message);
+    throw new Error(
+      missing ? `${error.message} Run supabase/sms-messages.sql in the Supabase SQL Editor.` : error.message
+    );
+  }
+  const result = (data ?? {}) as { message_ids?: string[]; without_number?: number; has_sender?: boolean };
+  const ids = result.message_ids ?? [];
+  const outcomes = await Promise.all(ids.map((id) => requestSmsSend(id)));
+  return {
+    texted: ids.length,
+    withoutNumber: Number(result.without_number ?? 0),
+    hasSender: result.has_sender !== false,
+    connected: ids.length === 0 ? null : outcomes.every((outcome) => outcome.connected),
+  };
+}
+
+/**
  * The chat list: every number that has messages or a saved name. Chats with
  * messages come first, most recent on top; saved contacts nobody has written
  * to yet follow, by name.

@@ -36,6 +36,7 @@ import {
 import { GOOGLE_MAPS_API_KEY } from '@/lib/env';
 import { PrimaryButton } from '@/components/primary-button';
 import { recordDispatchAction } from '@/lib/audit';
+import { notifyReportersAccepted, type AcceptanceNotice } from '@/lib/sms-messages';
 import { ResponderVideoPlayer } from '@/components/responder-video-player';
 import { AssignedResponder } from '@/components/assigned-responder';
 import { publicVideoUrl } from '@/lib/incident-video';
@@ -70,6 +71,27 @@ interface EmergencyReport {
    * only a generated placeholder.
    */
   details: string | null;
+}
+
+function people(count: number): string {
+  return count === 1 ? '1 reporter' : `${count} reporters`;
+}
+
+// Says plainly whether a text actually left. "Queued" and "sent" are different
+// promises to someone waiting for help, and the responder should know which.
+function describeNotice(notice: AcceptanceNotice): string {
+  const missing =
+    notice.withoutNumber > 0
+      ? ` ${notice.withoutNumber === 1 ? '1 report has' : `${notice.withoutNumber} reports have`} no phone number on record.`
+      : '';
+  if (!notice.hasSender) return 'No text was sent: this account has no active responder record to send as.';
+  if (notice.texted === 0) {
+    return notice.withoutNumber > 0
+      ? `No text was sent.${missing}`
+      : 'The reporters were already told that help is on the way.';
+  }
+  if (notice.connected) return `${people(notice.texted)} texted that help is on the way.${missing}`;
+  return `Texts for ${people(notice.texted)} are saved but not sent: SMS is not connected yet.${missing}`;
 }
 
 function hasValidCoords(lat: number | null, lng: number | null): boolean {
@@ -109,6 +131,9 @@ export default function MapScreen() {
   const [directionsResult, setDirectionsResult] = useState<google.maps.DirectionsResult | null>(null);
   const [directionsFailed, setDirectionsFailed] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
+  // What happened to the texts sent to the reporters of the card just accepted.
+  const [reporterNote, setReporterNote] = useState<{ groupKey: string; text: string } | null>(null);
+  const statusBusy = useRef(false);
   const geocoderRef = useRef<google.maps.Geocoder | null>(null);
 
   const mapHeight = 640;
@@ -325,6 +350,22 @@ export default function MapScreen() {
   const handleStatusAction = async (group: ReportGroup<EmergencyReport>) => {
     const action = nextStatusAction(group.lead.status);
     if (!action) return;
+    // A second click while the first is still saving used to run the whole
+    // action again: two entries in the audit log for one Accept, and now it
+    // would mean two rounds of texts as well.
+    if (statusBusy.current) return;
+    statusBusy.current = true;
+    try {
+      await applyStatusAction(group, action);
+    } finally {
+      statusBusy.current = false;
+    }
+  };
+
+  const applyStatusAction = async (
+    group: ReportGroup<EmergencyReport>,
+    action: NonNullable<ReturnType<typeof nextStatusAction>>
+  ) => {
     setStatusError(null);
     const ids = group.members.map((m) => m.id);
     const update: Record<string, unknown> = { status: action.next };
@@ -363,6 +404,20 @@ export default function MapScreen() {
       setSelectedId(null);
     } else {
       setReports((prev) => prev.map((r) => (ids.includes(r.id) ? { ...r, status: action.next } : r)));
+    }
+
+    // Accepting answers every caller behind the card, so each of them is told,
+    // separately. The status is already saved by now: a text that cannot be
+    // sent is reported, but it does not undo the Accept.
+    if (action.next === 'responding') {
+      setReporterNote({ groupKey: group.key, text: 'Letting the reporters know…' });
+      try {
+        const notice = await notifyReportersAccepted(ids);
+        setReporterNote({ groupKey: group.key, text: describeNotice(notice) });
+      } catch (err: unknown) {
+        const reason = err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : String(err);
+        setReporterNote({ groupKey: group.key, text: `The reporters could not be texted: ${reason}` });
+      }
     }
   };
 
@@ -660,6 +715,9 @@ export default function MapScreen() {
           ) : null}
           {selectedReport.status === 'responding' ? (
             <Text style={styles.hintText}>Tracking your live location as you head to the scene.</Text>
+          ) : null}
+          {reporterNote && reporterNote.groupKey === selectedGroup?.key ? (
+            <Text style={styles.hintText}>{reporterNote.text}</Text>
           ) : null}
           <ResponderVideoPlayer incidentId={selectedReport.incidentId} recordedVideoUrl={recordedVideoUrl} />
           {route ? (

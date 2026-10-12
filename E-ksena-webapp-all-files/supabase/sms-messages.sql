@@ -60,10 +60,23 @@ CREATE TABLE IF NOT EXISTS public.sms_messages (
   sender_auth_id      UUID REFERENCES auth.users(id) ON DELETE SET NULL,
   sender_name         TEXT,
 
-  -- Filled in by the backend.
+  -- Filled in by the sending function.
   provider_message_id TEXT,
-  error               TEXT
+  error               TEXT,
+
+  -- 'chat' is something a responder typed. 'accepted' is the automatic text
+  -- that tells a reporter their report was taken up.
+  kind                TEXT NOT NULL DEFAULT 'chat' CHECK (kind IN ('chat', 'accepted'))
 );
+
+-- For a table created before kind existed.
+ALTER TABLE public.sms_messages
+  ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'chat' CHECK (kind IN ('chat', 'accepted'));
+
+-- A reporter is told once per report that help is coming, however many times
+-- Accept is pressed. The database refuses a second copy.
+CREATE UNIQUE INDEX IF NOT EXISTS sms_messages_accepted_once
+  ON public.sms_messages (report_id, phone) WHERE kind = 'accepted';
 
 CREATE INDEX IF NOT EXISTS sms_messages_thread_idx ON public.sms_messages (phone, created_at);
 CREATE INDEX IF NOT EXISTS sms_messages_queue_idx ON public.sms_messages (status) WHERE status = 'queued';
@@ -95,6 +108,7 @@ CREATE POLICY "Responders queue outgoing messages" ON public.sms_messages
   WITH CHECK (
     direction = 'outbound'
     AND status = 'queued'
+    AND kind = 'chat'
     AND sender_auth_id = auth.uid()
     AND provider_message_id IS NULL
     AND error IS NULL
@@ -195,7 +209,88 @@ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------------------
--- PART 5: check
+-- PART 5: tell every reporter their report was accepted
+-- ---------------------------------------------------------------------------
+-- When several people report the same emergency the dashboard shows one card,
+-- and one Accept answers all of them. Each of those people is then sent their
+-- own text. It is not a group message: nobody learns who else reported.
+--
+-- The reporter's number is on the incident their report came from, with their
+-- profile as a fallback. Responders cannot read either table, so the lookup is
+-- done here, for reports the caller's own service handles and no others.
+-- Numbers are put into international form, and a person who filed several of
+-- the reports is texted once.
+CREATE OR REPLACE FUNCTION public.notify_reporters_accepted(report_ids TEXT[], message TEXT)
+RETURNS JSONB
+LANGUAGE sql
+VOLATILE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+  WITH me AS (
+    SELECT r.service_type, COALESCE(NULLIF(btrim(r.name), ''), 'Responder') AS sender_name
+    FROM public.responders r
+    WHERE r.auth_user_id = auth.uid() AND COALESCE(r.is_active, true)
+    LIMIT 1
+  ),
+  mine AS (
+    SELECT rp.report_id::TEXT AS report_id,
+           regexp_replace(
+             COALESCE(NULLIF(btrim(i.user_phone_number), ''), NULLIF(btrim(u.user_phone_number), ''), ''),
+             '[^0-9]', '', 'g'
+           ) AS digits
+    FROM public.reports rp
+    LEFT JOIN public.incidents i ON i.incident_id::TEXT = rp.incident_id::TEXT
+    LEFT JOIN public.users u ON u.user_id::TEXT = rp.user_id::TEXT
+    WHERE rp.report_id::TEXT = ANY (report_ids)
+      AND (
+        public.responder_handles_type(rp.classified_as)
+        OR public.report_is_unassigned(rp.classified_as)
+        OR EXISTS (SELECT 1 FROM public.admins a WHERE a.auth_user_id = auth.uid())
+      )
+  ),
+  numbered AS (
+    SELECT report_id,
+           CASE
+             WHEN digits ~ '^0[0-9]{9,11}$'  THEN '+63' || substr(digits, 2)
+             WHEN digits ~ '^63[0-9]{9,11}$' THEN '+' || digits
+             WHEN digits ~ '^9[0-9]{9}$'     THEN '+63' || digits
+             WHEN digits ~ '^[0-9]{8,15}$'   THEN '+' || digits
+             ELSE NULL
+           END AS phone
+    FROM mine
+  ),
+  recipients AS (
+    SELECT DISTINCT ON (phone) phone, report_id
+    FROM numbered
+    WHERE phone IS NOT NULL
+    ORDER BY phone, report_id
+  ),
+  queued AS (
+    INSERT INTO public.sms_messages
+      (phone, direction, status, body, service_type, report_id, sender_auth_id, sender_name, kind)
+    SELECT rc.phone, 'outbound', 'queued', left(btrim(message), 480), me.service_type,
+           rc.report_id, auth.uid(), me.sender_name, 'accepted'
+    FROM recipients rc
+    CROSS JOIN me
+    WHERE auth.uid() IS NOT NULL AND char_length(btrim(message)) > 0
+    ON CONFLICT (report_id, phone) WHERE kind = 'accepted' DO NOTHING
+    RETURNING id
+  )
+  SELECT jsonb_build_object(
+    'message_ids', COALESCE((SELECT jsonb_agg(id) FROM queued), '[]'::jsonb),
+    'reports', (SELECT count(*) FROM mine),
+    'without_number', (SELECT count(*) FROM numbered WHERE phone IS NULL),
+    'has_sender', EXISTS (SELECT 1 FROM me)
+  );
+$$;
+
+REVOKE ALL ON FUNCTION public.notify_reporters_accepted(TEXT[], TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.notify_reporters_accepted(TEXT[], TEXT) FROM anon;
+GRANT EXECUTE ON FUNCTION public.notify_reporters_accepted(TEXT[], TEXT) TO authenticated;
+
+-- ---------------------------------------------------------------------------
+-- PART 6: check
 -- ---------------------------------------------------------------------------
 SELECT tablename, policyname, cmd
 FROM pg_policies
