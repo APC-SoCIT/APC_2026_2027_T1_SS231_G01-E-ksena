@@ -144,7 +144,7 @@ export const TERMS_DOCUMENT: LegalDocumentContent = {
  */
 export const PRIVACY_DOCUMENT: LegalDocumentContent = {
   title: 'Privacy Policy',
-  effectiveDate: '11 October 2026',
+  effectiveDate: '12 October 2026',
   intro:
     'E-ksena handles emergency video, location and contact details, which are sensitive by nature. This policy explains what we collect, why, who sees it and what you can do about it. It is written to meet the right to be informed under the Data Privacy Act of 2012.',
   sections: [
@@ -163,7 +163,7 @@ export const PRIVACY_DOCUMENT: LegalDocumentContent = {
         'Your account details: name, email address, mobile number and date of birth.',
         'The time of the report, and the status it moves through as responders handle it.',
         'Audio and video exchanged during a live call with a responder, while that call is in progress.',
-        'If you report by phone or SMS instead of through the app, the responder who takes the report records what you told them, the location you described and, if you gave it, your phone number.',
+        'If you and a responder exchange text messages, we keep your phone number, the messages and any name the responder saves for your number.',
       ],
     },
     {

@@ -11,19 +11,21 @@
 -- HOW A MESSAGE TRAVELS
 -- The dashboard never talks to the SMS provider. The provider's key is a
 -- secret, and anything the dashboard holds is public, so the dashboard only
--- queues a message here and the backend, which holds the key, sends it.
+-- queues a message here. Two Supabase functions, which can hold the key, do
+-- the rest. Both are in supabase/functions and need no dashboard change:
 --
 --   Outgoing  The dashboard inserts a row with direction 'outbound' and status
---             'queued'. The backend sends each queued row through the provider
---             (PhilSMS) and sets status to 'sent' with provider_message_id, or
---             to 'failed' with the reason in error.
---   Incoming  When the provider delivers a reply, the backend inserts a row
---             with direction 'inbound' and status 'received', copying
---             service_type from the newest outbound row for that number.
+--             'queued', then asks the send-sms function to deliver it. The
+--             function sends it through PhilSMS and sets status to 'sent' with
+--             provider_message_id, or to 'failed' with the reason in error.
+--   Incoming  PhilSMS calls the sms-inbound function with each reply, and it
+--             inserts a row with direction 'inbound' and status 'received',
+--             copying service_type from the newest outbound row to that number.
 --
--- The backend uses the service-role key, so the policies below do not bind it.
--- Until it does both jobs, messages written on the dashboard stay 'queued' and
--- no text reaches a phone. The dashboard says so on screen.
+-- The functions use the service-role key, so the policies below do not bind
+-- them. Until they are deployed and given a PhilSMS token, a message written
+-- on the dashboard stays 'queued' and no text reaches a phone. The dashboard
+-- says so on screen. supabase/functions/README.md has the steps.
 --
 -- WHO SEES A THREAD
 -- A caller's number and what they wrote are personal data, so a thread is
@@ -109,24 +111,95 @@ CREATE POLICY "Responders queue outgoing messages" ON public.sms_messages
 -- the fact or removed from the dashboard.
 
 -- ---------------------------------------------------------------------------
--- PART 3: live updates
+-- PART 3: saved contacts
 -- ---------------------------------------------------------------------------
--- Lets an open thread show a reply, or a change of status, as it happens.
+-- A name for a number, so a thread reads as a person and not as digits. Kept
+-- per service: the same caller may be known to two services, and neither
+-- should see what the other has noted.
+CREATE TABLE IF NOT EXISTS public.sms_contacts (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  phone        TEXT NOT NULL CHECK (phone ~ '^\+[0-9]{8,15}$'),
+  name         TEXT NOT NULL CHECK (char_length(btrim(name)) BETWEEN 1 AND 80),
+  service_type TEXT NOT NULL CHECK (service_type IN ('fire', 'medical', 'police')),
+  saved_by     UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  UNIQUE (service_type, phone)
+);
+
+ALTER TABLE public.sms_contacts ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Responders read their service contacts" ON public.sms_contacts;
+CREATE POLICY "Responders read their service contacts" ON public.sms_contacts
+  FOR SELECT
+  USING (
+    EXISTS (SELECT 1 FROM public.admins a WHERE a.auth_user_id = auth.uid())
+    OR EXISTS (
+      SELECT 1 FROM public.responders r
+      WHERE r.auth_user_id = auth.uid()
+        AND COALESCE(r.is_active, true)
+        AND r.service_type = sms_contacts.service_type
+    )
+  );
+
+DROP POLICY IF EXISTS "Responders save their service contacts" ON public.sms_contacts;
+CREATE POLICY "Responders save their service contacts" ON public.sms_contacts
+  FOR INSERT
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.responders r
+      WHERE r.auth_user_id = auth.uid()
+        AND COALESCE(r.is_active, true)
+        AND r.service_type = sms_contacts.service_type
+    )
+  );
+
+-- Renaming a contact. The same test before and after, so a contact cannot be
+-- moved into another service by editing it.
+DROP POLICY IF EXISTS "Responders rename their service contacts" ON public.sms_contacts;
+CREATE POLICY "Responders rename their service contacts" ON public.sms_contacts
+  FOR UPDATE
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.responders r
+      WHERE r.auth_user_id = auth.uid()
+        AND COALESCE(r.is_active, true)
+        AND r.service_type = sms_contacts.service_type
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.responders r
+      WHERE r.auth_user_id = auth.uid()
+        AND COALESCE(r.is_active, true)
+        AND r.service_type = sms_contacts.service_type
+    )
+  );
+
+-- ---------------------------------------------------------------------------
+-- PART 4: live updates
+-- ---------------------------------------------------------------------------
+-- Lets an open thread show a reply, a change of status or a renamed contact
+-- as it happens.
 DO $$
+DECLARE
+  t TEXT;
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_publication_tables
-    WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'sms_messages'
-  ) THEN
-    ALTER PUBLICATION supabase_realtime ADD TABLE public.sms_messages;
-  END IF;
+  FOREACH t IN ARRAY ARRAY['sms_messages', 'sms_contacts'] LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = t
+    ) THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', t);
+    END IF;
+  END LOOP;
 END $$;
 
 -- ---------------------------------------------------------------------------
--- PART 4: check
+-- PART 5: check
 -- ---------------------------------------------------------------------------
-SELECT policyname, cmd
+SELECT tablename, policyname, cmd
 FROM pg_policies
-WHERE schemaname = 'public' AND tablename = 'sms_messages'
-ORDER BY cmd;
--- Expect two rows: INSERT and SELECT. No UPDATE, no DELETE.
+WHERE schemaname = 'public' AND tablename IN ('sms_messages', 'sms_contacts')
+ORDER BY tablename, cmd;
+-- Expect five rows: sms_contacts with INSERT, SELECT and UPDATE; sms_messages
+-- with INSERT and SELECT. No DELETE on either.
