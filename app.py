@@ -9,70 +9,109 @@ from supabase import create_client, Client
 
 app = FastAPI()
 
-# Supports both lowercase and uppercase environment variable names
+# Supports both lowercase and uppercase environment variables
 SUPABASE_URL = os.environ.get("supabase_url") or os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("supabase_key") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 HF_WEBHOOK_SECRET = os.environ.get("HF_WEBHOOK_SECRET")
-
-# Configurable model version tag
-MODEL_VERSION = os.environ.get("MODEL_VERSION", "v1.0.0")
 
 if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     raise RuntimeError("Missing Supabase credentials in environment variables/secrets.")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+MODEL_VERSION = "emergency-classifier-v1"
 
 
 class VideoPayload(BaseModel):
-    video_url: str
-    record_id: str  # Maps to incident_id (uuid)
+    video_url: str = ""
+    file_path: str = ""  # e.g., "incident-123.mp4"
+    incident_id: str     # maps to UUID in ai_analysis table
 
 
-def process_and_classify(video_url: str, record_id: str):
-    """Background worker function executing heavy video classification."""
+def run_model_inference(local_video_path: str) -> tuple[str, float]:
+    """
+    Your actual video classification logic (e.g., PyTorch 3D-CNN, Video Transformer).
+    Returns (predicted_service_type, confidence_score).
+    Classes: 'fire', 'medical', 'police'
+    """
+    # Replace this placeholder with your real model inference:
+    predicted_service_type = "fire"
+    confidence_score = 0.96
+    return predicted_service_type, confidence_score
+
+
+def process_single_incident(incident_id: str, file_path: str = "", video_url: str = ""):
+    """Classifies a video and inserts results into ai_analysis."""
     try:
-        # 1. Update status in parent emergency_reports table
-        supabase.table("emergency_reports").update({
-            "status": "processing"
-        }).eq("id", record_id).execute()
+        # 1. Obtain signed URL if direct URL was not provided
+        if not video_url and file_path:
+            signed_res = supabase.storage.from_("incident-videos").create_signed_url(file_path, 900)
+            if "signedUrl" in signed_res:
+                video_url = signed_res["signedUrl"]
+            elif isinstance(signed_res, dict) and "signedURL" in signed_res:
+                video_url = signed_res["signedURL"]
+            else:
+                raise ValueError(f"Could not generate signed URL for path: {file_path}")
 
-        # 2. Download video to local temporary file
+        if not video_url:
+            raise ValueError(f"No video URL or file path provided for incident {incident_id}")
+
+        # 2. Download video to temporary storage
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=True) as temp_video:
             urllib.request.urlretrieve(video_url, temp_video.name)
 
-            # 3. Model inference logic (replace with your actual PyTorch model call)
-            # Labels: "fire", "medical", or "police"
-            predicted_class = "fire"
-            confidence_score = 0.96
+            # 3. Run model classification
+            detected_type, confidence = run_model_inference(temp_video.name)
 
-        # 4. Insert analysis record into the ai_analysis table
-        supabase.table("ai_analysis").insert({
-            "incident_id": record_id,
+        # 4. Insert into the ai_analysis table matching your schema
+        analysis_record = {
+            "incident_id": incident_id,
             "model_version": MODEL_VERSION,
-            "service_type": predicted_class,
-            "detected_service_type": predicted_class,
-            "confidence_score": float(confidence_score),
+            "service_type": detected_type,
+            "detected_service_type": detected_type,
+            "confidence_score": float(confidence),
             "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
-        }).execute()
+        }
 
-        # 5. Mark the incident record as completed
-        supabase.table("emergency_reports").update({
-            "status": "classified",
-            "category": predicted_class,
-            "confidence": confidence_score
-        }).eq("id", record_id).execute()
+        supabase.table("ai_analysis").insert(analysis_record).execute()
+        print(f"[SUCCESS] Classified incident {incident_id} as {detected_type} ({confidence})")
 
     except Exception as e:
-        # Update incident record with failure details
-        supabase.table("emergency_reports").update({
-            "status": "failed",
-            "error_log": str(e)
-        }).eq("id", record_id).execute()
+        print(f"[ERROR] Failed processing incident {incident_id}: {str(e)}")
+
+
+def process_all_unclassified_videos():
+    """
+    Finds incidents from the bucket or table that do not have
+    an entry in ai_analysis yet, and runs inference on them.
+    """
+    try:
+        # Step A: Get all incident_ids already processed
+        analyzed_resp = supabase.table("ai_analysis").select("incident_id").execute()
+        analyzed_ids = {row["incident_id"] for row in analyzed_resp.data if row.get("incident_id")}
+
+        # Step B: Get files from the 'incident-videos' bucket
+        # Note: adjust limit if you have more than 100 videos
+        files = supabase.storage.from_("incident-videos").list(limit=100)
+
+        for file_obj in files:
+            file_name = file_obj.get("name")
+            if not file_name or file_name.startswith("."):
+                continue
+
+            # Assume file name without extension matches incident_id (e.g. "<uuid>.mp4")
+            # If your file name is stored in another table, query that table instead.
+            incident_id = os.path.splitext(file_name)[0]
+
+            if incident_id not in analyzed_ids:
+                print(f"[QUEUE] Processing unanalyzed video: {file_name}")
+                process_single_incident(incident_id=incident_id, file_path=file_name)
+
+    except Exception as e:
+        print(f"[ERROR] Batch classification scan failed: {str(e)}")
 
 
 @app.get("/")
 def health_check():
-    """Health check endpoint to keep Hugging Face Space running."""
     return {"status": "ok", "message": "Emergency Classifier API is active"}
 
 
@@ -82,16 +121,31 @@ async def classify_emergency(
     background_tasks: BackgroundTasks,
     authorization: str = Header(None)
 ):
-    # Verify incoming token
-    if authorization != f"Bearer {HF_WEBHOOK_SECRET}":
+    """Triggered per incident from Supabase Edge Function or Webhook."""
+    if HF_WEBHOOK_SECRET and authorization != f"Bearer {HF_WEBHOOK_SECRET}":
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # Queue the heavy job in the background and return immediately
-    background_tasks.add_task(process_and_classify, payload.video_url, payload.record_id)
+    background_tasks.add_task(
+        process_single_incident,
+        incident_id=payload.incident_id,
+        file_path=payload.file_path,
+        video_url=payload.video_url
+    )
+    return {"message": "Job queued for processing", "incident_id": payload.incident_id}
 
-    return {"message": "Job queued for processing", "record_id": payload.record_id}
+
+@app.post("/process-unclassified", status_code=202)
+async def trigger_unclassified_batch(
+    background_tasks: BackgroundTasks,
+    authorization: str = Header(None)
+):
+    """Scans the bucket and processes any video without an ai_analysis record."""
+    if HF_WEBHOOK_SECRET and authorization != f"Bearer {HF_WEBHOOK_SECRET}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    background_tasks.add_task(process_all_unclassified_videos)
+    return {"message": "Batch scan for unclassified videos started in background"}
 
 
-# Hugging Face Spaces require listening on 0.0.0.0:7860
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=7860)
