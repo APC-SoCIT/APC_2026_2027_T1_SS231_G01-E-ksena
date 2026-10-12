@@ -8,6 +8,11 @@ export const SERVICE_TYPE_BY_ROLE: Record<RoleThemeKey, 'fire' | 'medical' | 'po
   police: 'police',
 };
 
+/** True for the three services, and for nothing else an account might carry in that field. */
+export function isResponderRole(value: unknown): value is RoleThemeKey {
+  return typeof value === 'string' && Object.keys(SERVICE_TYPE_BY_ROLE).includes(value);
+}
+
 export type ResponderSignupInput = {
   email: string;
   password: string;
@@ -43,7 +48,12 @@ export async function signUpResponder(input: ResponderSignupInput): Promise<{ ne
 
 async function upsertResponderRecord(user: NonNullable<Awaited<ReturnType<typeof supabase.auth.getUser>>['data']['user']>) {
   const meta = user.user_metadata as Record<string, unknown>;
-  const role = meta.role as RoleThemeKey | undefined;
+  const role = meta.role;
+  // An account with no service is not a responder, so it gets no entry. This
+  // used to fall back to 'police', which put any such account in the directory
+  // as a police responder the moment it logged in - an admin-only account, or
+  // a citizen trying the dashboard, among them.
+  if (!isResponderRole(role)) return;
   const { error } = await supabase.from('responders').upsert(
     {
       auth_user_id: user.id,
@@ -51,7 +61,7 @@ async function upsertResponderRecord(user: NonNullable<Awaited<ReturnType<typeof
       rank: (meta.rank as string) ?? null,
       office: (meta.office as string) ?? null,
       responder_phone_number: (meta.phone as string) ?? null,
-      service_type: role ? SERVICE_TYPE_BY_ROLE[role] : 'police',
+      service_type: SERVICE_TYPE_BY_ROLE[role],
       station_address: (meta.station_address as string) ?? null,
     },
     { onConflict: 'auth_user_id' }
@@ -83,7 +93,29 @@ export async function resendSignupOtp(email: string): Promise<void> {
 export async function signInResponder(email: string, password: string): Promise<void> {
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) throw error;
-  if (data.user) await upsertResponderRecord(data.user);
+  if (!data.user) return;
+
+  if (isResponderRole(data.user.user_metadata?.role)) {
+    await upsertResponderRecord(data.user);
+    return;
+  }
+
+  // No service on the account, so the only way in is as an administrator.
+  // Checked here so that an account with neither is told so and signed back
+  // out, where before it stayed on this screen, signed in, with no message.
+  const { data: adminRow, error: adminError } = await supabase
+    .from('admins')
+    .select('auth_user_id')
+    .eq('auth_user_id', data.user.id)
+    .maybeSingle();
+  if (adminRow) return;
+
+  await signOutResponder().catch(() => undefined);
+  throw new Error(
+    adminError
+      ? `Could not confirm what this account may access: ${adminError.message}`
+      : 'This account is not a responder or an administrator, so it cannot use the dashboard.'
+  );
 }
 
 /**

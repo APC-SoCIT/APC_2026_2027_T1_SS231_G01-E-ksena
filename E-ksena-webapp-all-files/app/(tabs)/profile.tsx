@@ -22,7 +22,7 @@ import {
 } from '@/constants/theme';
 
 export default function ProfileScreen() {
-  const { user, logout, updateProfile } = useAuth();
+  const { user, logout, updateProfile, isAdminOnly, accountEmail } = useAuth();
   const theme = useRoleTheme();
   const [username, setUsername] = useState(user?.username ?? '');
   const [fullName, setFullName] = useState(user?.fullName ?? '');
@@ -82,6 +82,42 @@ export default function ProfileScreen() {
     }
   };
 
+  const logoutSection = (
+    <>
+      {logoutError ? (
+        <View style={[styles.errorBox, styles.logoutError]}>
+          <Text style={styles.errorText}>{logoutError}</Text>
+        </View>
+      ) : null}
+
+      <Pressable onPress={handleLogout} style={styles.logoutBtn}>
+        <Text style={styles.logoutBtnText}>Log out</Text>
+      </Pressable>
+    </>
+  );
+
+  // An admin with no service has no responder profile to fill in. The name,
+  // username and number on the form below are what dispatch shows for a
+  // responder, and saving them is what files an account in the directory.
+  if (isAdminOnly) {
+    return (
+      <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+        <Text style={styles.title}>Account</Text>
+        <View style={[styles.card, CardShadow]}>
+          <View style={styles.fieldRow}>
+            <Text style={styles.label}>Role</Text>
+            <Text style={[styles.value, { color: theme.primary, fontWeight: '600' }]}>{theme.displayName}</Text>
+          </View>
+          <View style={[styles.fieldRow, styles.lastFieldRow]}>
+            <Text style={styles.label}>Email</Text>
+            <Text style={styles.value}>{accountEmail}</Text>
+          </View>
+        </View>
+        {logoutSection}
+      </ScrollView>
+    );
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
       <Text style={styles.title}>Account</Text>
@@ -140,15 +176,7 @@ export default function ProfileScreen() {
         <PrimaryButton title={saving ? 'Saving…' : 'Save changes'} onPress={handleSave} style={styles.saveBtn} disabled={saving} />
       </View>
 
-      {logoutError ? (
-        <View style={[styles.errorBox, styles.logoutError]}>
-          <Text style={styles.errorText}>{logoutError}</Text>
-        </View>
-      ) : null}
-
-      <Pressable onPress={handleLogout} style={styles.logoutBtn}>
-        <Text style={styles.logoutBtnText}>Log out</Text>
-      </Pressable>
+      {logoutSection}
     </ScrollView>
   );
 }
@@ -184,6 +212,9 @@ const styles = StyleSheet.create({
     alignItems: Platform.OS === 'web' ? 'center' : 'stretch',
     gap: Spacing.sm,
     marginBottom: Spacing.md,
+  },
+  lastFieldRow: {
+    marginBottom: 0,
   },
   label: {
     fontSize: FontSizes.sm,

@@ -48,6 +48,10 @@ CREATE POLICY "Admins manage responders" ON public.responders
 -- ---------------------------------------------------------------------------
 -- PART 4: make yourself an admin
 -- ---------------------------------------------------------------------------
+-- To hand admin from one account to another, use
+-- supabase/admin-account-and-videos.sql instead: it adds the new account
+-- before it removes the old one.
+--
 -- Find the account id under Authentication > Users, then uncomment and run:
 --
 --   INSERT INTO public.admins (auth_user_id)

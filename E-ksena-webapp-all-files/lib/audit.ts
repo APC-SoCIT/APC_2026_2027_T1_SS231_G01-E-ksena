@@ -1,7 +1,7 @@
 import { supabase } from '@/lib/supabase';
 
 export type DispatchAuditEntry = {
-  action: 'status_change' | 'reassign';
+  action: 'status_change' | 'reassign' | 'video_delete';
   previousValue?: string | null;
   newValue?: string | null;
   reportIds: string[];

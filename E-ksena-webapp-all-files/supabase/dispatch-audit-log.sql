@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS public.dispatch_audit_log (
   actor_role      TEXT,
 
   -- WHAT
-  action          TEXT NOT NULL CHECK (action IN ('status_change', 'reassign')),
+  -- video_delete was added by supabase/admin-account-and-videos.sql, which
+  -- also widens this check on a table that already exists.
+  action          TEXT NOT NULL CHECK (action IN ('status_change', 'reassign', 'video_delete')),
   previous_value  TEXT,
   new_value       TEXT,
 

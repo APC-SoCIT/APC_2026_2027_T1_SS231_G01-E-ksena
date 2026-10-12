@@ -1,6 +1,6 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react';
 import { useAuth } from '@/context/auth';
-import { getRoleTheme, type RoleThemeKey, type RoleThemeColors } from '@/constants/theme';
+import { AdminTheme, getRoleTheme, type RoleThemeKey, type RoleThemeColors } from '@/constants/theme';
 
 type RoleThemeContextValue = RoleThemeColors & {
   roleKey: RoleThemeKey | undefined;
@@ -17,10 +17,12 @@ function roleToThemeClass(role: RoleThemeKey | undefined): string {
 }
 
 export function RoleThemeProvider({ children }: { children: ReactNode }) {
-  const { user } = useAuth();
+  const { user, isAdminOnly } = useAuth();
   const roleKey = user?.role as RoleThemeKey | undefined;
-  const theme = getRoleTheme(roleKey);
-  const themeClass = roleToThemeClass(roleKey);
+  // An admin with no service gets colours and a label of its own. Left to the
+  // fallback it would be dressed, and badged, as a firefighter.
+  const theme = isAdminOnly ? AdminTheme : getRoleTheme(roleKey);
+  const themeClass = isAdminOnly ? 'theme-admin' : roleToThemeClass(roleKey);
 
   const value = useMemo<RoleThemeContextValue>(
     () => ({

@@ -220,7 +220,7 @@ export const PRIVACY_DOCUMENT: LegalDocumentContent = {
         'Accounts are protected by a password, and the system requires a strong one.',
         'Access to incident data is restricted at the database level, not only in the interface. A responder can read only the incidents that belong to their own service, or that have not yet been matched to one.',
         'The contact details of a responder are readable by that responder and by an administrator. When a responder is assigned to an incident, their name, unit and contact number are also shown to the responders of the service handling that incident, so that they can coordinate.',
-        'Emergency records cannot be deleted from the applications.',
+        'Report records cannot be deleted from the applications. An administrator can delete a stored incident video, but cannot add, replace or alter one, and a deletion made from the dashboard is written to the audit log.',
         'Dispatch actions are written to an audit log.',
         'Connections to the platform are encrypted in transit.',
       ],

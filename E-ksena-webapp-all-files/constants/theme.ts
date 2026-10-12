@@ -112,6 +112,13 @@ export const RoleThemes: Record<RoleThemeKey, RoleThemeColors> = {
   },
 };
 
+/** For an account that administers the platform and belongs to no service. */
+export const AdminTheme: RoleThemeColors = {
+  primary: '#3A4350',
+  primaryHover: '#2A313B',
+  displayName: 'Administrator',
+};
+
 export function getRoleTheme(role: RoleThemeKey | undefined): RoleThemeColors {
   if (role === 'police' || role === 'firefighter' || role === 'medic') {
     return RoleThemes[role];
