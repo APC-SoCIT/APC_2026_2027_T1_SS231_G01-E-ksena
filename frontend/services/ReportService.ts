@@ -636,6 +636,23 @@ export const getDispatcherInfo = async (incidentId: string): Promise<{
   }
 };
 
+// Send in-app citizen chat reply (Option 2 fallback: inserts into sms_messages via backend)
+export const sendChatReply = async (message: string, token?: string): Promise<{ success: boolean; data?: any; error?: string }> => {
+  try {
+    if (token) {
+      apiClient.setAuthToken(token);
+    }
+    const response = await apiClient.post<any>('/chat/reply', { message });
+    if (response.success && response.data?.success) {
+      return { success: true, data: response.data.data };
+    }
+    return { success: false, error: response.data?.error || response.error || 'Failed to send reply' };
+  } catch (err: any) {
+    console.error('[ReportService] Error in sendChatReply:', err);
+    return { success: false, error: err.message || 'Network error sending reply' };
+  }
+};
+
 // Set API base URL for different environments
 export const setApiBaseUrl = (url: string) => {
   apiClient['baseURL'] = url;

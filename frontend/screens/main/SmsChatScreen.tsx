@@ -26,6 +26,7 @@ import {
 import * as SMS from 'expo-sms';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useAuth } from '../../context/AuthContext';
+import { sendChatReply } from '../../services/ReportService';
 
 interface Message {
   id: string;
@@ -83,13 +84,30 @@ const SmsChatScreen: React.FC = () => {
     }, 150);
   };
 
-  const sendNativeSms = async (body: string, commandName?: string) => {
+  const sendMessage = async (body: string, commandName?: string) => {
+    // Add immediately to local message state
+    addMessage(body, 'user', commandName);
+
+    // 1. Try sending over HTTP to backend (Option 2 fallback: updates sms_messages immediately for Web App)
+    try {
+      const token = state.auth.token || undefined;
+      const result = await sendChatReply(body, token);
+      if (result.success) {
+        console.log('[CHAT] Reply sent successfully to backend sms_messages');
+        return;
+      }
+      console.warn('[CHAT] Backend reply failed, falling back to native SMS:', result.error);
+    } catch (apiErr) {
+      console.warn('[CHAT] API connection error, falling back to native SMS:', apiErr);
+    }
+
+    // 2. Fallback to native SMS if offline or backend is unreachable
     try {
       const isAvailable = await SMS.isAvailableAsync();
       if (!isAvailable) {
         Alert.alert(
           'SMS Not Available',
-          'SMS service is not available on this device. Would you like to place a cellular phone call instead?',
+          'Could not reach server or native SMS service. Would you like to call the hotline?',
           [
             { text: 'Cancel', style: 'cancel' },
             {
@@ -101,15 +119,9 @@ const SmsChatScreen: React.FC = () => {
         return;
       }
 
-      addMessage(body, 'user', commandName);
-
-      const result = await SMS.sendSMSAsync([responderPhone], body);
-      if (result.result === 'sent') {
-        console.log('[SMS] Message sent successfully');
-      }
-    } catch (err) {
-      console.error('[SMS] Error sending SMS:', err);
-      Alert.alert('SMS Error', 'Failed to launch SMS application: ' + String(err));
+      await SMS.sendSMSAsync([responderPhone], body);
+    } catch (smsErr) {
+      console.error('[SMS] Error sending SMS fallback:', smsErr);
     }
   };
 
@@ -124,7 +136,7 @@ ${mapsLink ? `Map: ${mapsLink}` : ''}
 ${incidentId ? `Incident ID: #${String(incidentId).slice(0, 8)}` : ''}
 Sent via E-ksena`;
 
-    await sendNativeSms(body, '/report');
+    await sendMessage(body, '/report');
   };
 
   const handleStatusCommand = async () => {
@@ -133,7 +145,7 @@ Sent via E-ksena`;
       incidentId ? ` (Incident #${String(incidentId).slice(0, 8)})` : ''
     }${address ? ` at ${address}` : ''}.`;
 
-    await sendNativeSms(body, '/status');
+    await sendMessage(body, '/status');
   };
 
   const handleCallCommand = () => {
@@ -171,7 +183,7 @@ Sent via E-ksena`;
     } else if (textToSend.toLowerCase() === '/call') {
       handleCallCommand();
     } else {
-      await sendNativeSms(textToSend);
+      await sendMessage(textToSend);
     }
   };
 

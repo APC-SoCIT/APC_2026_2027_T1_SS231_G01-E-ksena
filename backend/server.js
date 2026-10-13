@@ -855,6 +855,74 @@ app.post('/api/sms/webhook', async (req, res) => {
   }
 });
 
+// ============================================
+// ENDPOINT: Citizen In-App SMS Reply (Option 2 Fallback)
+// ============================================
+app.post('/api/chat/reply', requireAuth, async (req, res) => {
+  try {
+    const { message } = req.body;
+    if (!message || typeof message !== 'string' || !message.trim()) {
+      return res.status(400).json({ success: false, error: 'Message content is required' });
+    }
+
+    const trimmedMessage = message.trim();
+    const authUser = req.user;
+
+    // 1. Resolve citizen phone number securely (never trust user input directly)
+    let citizenPhone = authUser?.phone || authUser?.user_metadata?.phone;
+
+    if (!citizenPhone && authUser?.id) {
+      // Lookup in users table if phone wasn't in auth metadata
+      const { data: dbUser } = await supabase
+        .from('users')
+        .select('user_phone_number')
+        .eq('user_id', authUser.id)
+        .maybeSingle();
+
+      if (dbUser?.user_phone_number) {
+        citizenPhone = dbUser.user_phone_number;
+      }
+    }
+
+    const normalizedPhone = normalizePhilippinePhone(citizenPhone);
+    if (!normalizedPhone) {
+      console.warn('[CHAT REPLY] ⚠️ User has no valid phone registered:', authUser?.id);
+      return res.status(400).json({
+        success: false,
+        error: 'Unable to send reply: Citizen does not have a registered phone number.'
+      });
+    }
+
+    // 2. Insert into sms_messages with direction = 'inbound', status = 'received'
+    const { data: insertedMsg, error: insertError } = await supabase
+      .from('sms_messages')
+      .insert({
+        phone: normalizedPhone,
+        body: trimmedMessage,
+        direction: 'inbound',
+        status: 'received',
+        provider_message_id: `app-reply-${Date.now()}`
+      })
+      .select('id, phone, body, created_at')
+      .single();
+
+    if (insertError) {
+      console.error('[CHAT REPLY] Failed to insert inbound message:', insertError);
+      return res.status(500).json({ success: false, error: 'Database insert failed' });
+    }
+
+    console.log(`[CHAT REPLY] ✅ Inbound message recorded from ${normalizedPhone}: "${trimmedMessage.slice(0, 30)}..."`);
+    return res.json({
+      success: true,
+      data: insertedMsg
+    });
+  } catch (err) {
+    console.error('[CHAT REPLY] Exception in /api/chat/reply:', err);
+    return res.status(500).json({ success: false, error: err.message || 'Internal server error' });
+  }
+});
+
+
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
