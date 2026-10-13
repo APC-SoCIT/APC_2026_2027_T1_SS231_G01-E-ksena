@@ -260,43 +260,34 @@ Sent via E-ksena`;
           ))}
         </ScrollView>
 
-        {/* Quick Command Popup Card (Matches User's Screenshot) */}
+        {/* Quick Command Action Buttons */}
         {showCommands && (
           <View style={styles.commandMenuCard}>
-            {/* Command 1: /report */}
+            {/* Button 1: Send emergency report & GPS */}
             <TouchableOpacity style={styles.commandRow} onPress={handleReportCommand}>
               <View style={styles.commandLeft}>
-                <MapPin size={18} color="#dc2626" style={styles.commandIcon} />
-                <Text style={styles.commandLabel}>Send emergency report & GPS.</Text>
-              </View>
-              <View style={styles.commandBadge}>
-                <Text style={styles.commandBadgeText}>/report</Text>
+                <MapPin size={20} color="#dc2626" style={styles.commandIcon} />
+                <Text style={styles.commandLabel}>Send Emergency Report & GPS</Text>
               </View>
             </TouchableOpacity>
 
             <View style={styles.commandDivider} />
 
-            {/* Command 2: /status */}
+            {/* Button 2: Check responder arrival status */}
             <TouchableOpacity style={styles.commandRow} onPress={handleStatusCommand}>
               <View style={styles.commandLeft}>
-                <Clock size={18} color="#f59e0b" style={styles.commandIcon} />
-                <Text style={styles.commandLabel}>Check responder arrival status.</Text>
-              </View>
-              <View style={styles.commandBadge}>
-                <Text style={styles.commandBadgeText}>/status</Text>
+                <Clock size={20} color="#f59e0b" style={styles.commandIcon} />
+                <Text style={styles.commandLabel}>Check Responder Arrival Status</Text>
               </View>
             </TouchableOpacity>
 
             <View style={styles.commandDivider} />
 
-            {/* Command 3: /call */}
+            {/* Button 3: Live emergency call */}
             <TouchableOpacity style={styles.commandRow} onPress={handleCallCommand}>
               <View style={styles.commandLeft}>
-                <Phone size={18} color="#10b981" style={styles.commandIcon} />
-                <Text style={styles.commandLabel}>Live emergency call.</Text>
-              </View>
-              <View style={[styles.commandBadge, styles.callBadge]}>
-                <Text style={styles.commandBadgeText}>/call</Text>
+                <Phone size={20} color="#10b981" style={styles.commandIcon} />
+                <Text style={styles.commandLabel}>Live Emergency Call</Text>
               </View>
             </TouchableOpacity>
           </View>
