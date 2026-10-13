@@ -14,7 +14,6 @@ import {
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/auth';
 import { useRoleTheme } from '@/context/role-theme';
-import { PhoneInput, toE164, isValidPhone } from '@/components/phone-input';
 import {
   SMS_MAX_LENGTH,
   SMS_STATUS_LABELS,
@@ -62,11 +61,15 @@ function initial(name: string | null): string {
  * The Messages tab: a messenger for texting callers. Chats on the left, one
  * per number, with saved names; the open chat on the right.
  *
+ * A chat cannot be started here. One begins when a responder accepts an
+ * emergency on the Map: each reporter is texted that help is on the way, and
+ * that text is the first message of their chat. This screen is where the
+ * conversation then carries on, so there is nowhere to type a number.
+ *
  * Sending is split in two on purpose. This screen saves the message and asks
- * a Supabase function to deliver it, because the SMS provider key is a secret
- * and a web page cannot hold one. If that function is not live yet the message
- * stays queued and the screen says SMS is not connected; once it is live the
- * same code starts sending, with nothing here to change. A responder who
+ * the team's backend to deliver it, because the SMS provider key is a secret
+ * and a web page cannot hold one. If the backend cannot be reached the message
+ * stays queued and the screen says SMS is not connected. A responder who
  * believed a caller had been told help was coming, when no text ever went out,
  * would be worse off than one with no messaging at all, so that state is never
  * hidden.
@@ -86,9 +89,6 @@ export function SmsMessenger() {
 
   const [search, setSearch] = useState('');
   const [activePhone, setActivePhone] = useState<string | null>(null);
-  const [composing, setComposing] = useState(false);
-  const [newPhone, setNewPhone] = useState('');
-  const [newName, setNewName] = useState('');
   const [nameDraft, setNameDraft] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -149,15 +149,14 @@ export function SmsMessenger() {
 
   // On a wide screen the newest chat is open by default, as in any messenger.
   // On a narrow one the list is the first thing shown, and a chat replaces it.
-  const openPhone = composing ? null : activePhone ?? (wide ? chats[0]?.phone ?? null : null);
+  const openPhone = activePhone ?? (wide ? chats[0]?.phone ?? null : null);
   const openChat = chats.find((chat) => chat.phone === openPhone) ?? null;
-  const showList = wide || (!composing && !openChat);
-  const showThread = wide || composing || !!openChat;
+  const showList = wide || !openChat;
+  const showThread = wide || !!openChat;
   const notConnected = senderOffline || queueStuck;
 
   const openChatFor = (phone: string) => {
     setActivePhone(phone);
-    setComposing(false);
     setNameDraft(null);
     setSendError(null);
   };
@@ -165,16 +164,9 @@ export function SmsMessenger() {
   const send = async () => {
     setSendError(null);
     const body = draft.trim();
-    let phone = openPhone;
-    if (composing) {
-      if (!isValidPhone(newPhone)) {
-        setSendError('Enter the mobile number to message.');
-        return;
-      }
-      phone = toE164(newPhone);
-    }
+    const phone = openChat?.phone;
     if (!phone) {
-      setSendError('Choose a chat, or start a new one.');
+      setSendError('Choose a chat first.');
       return;
     }
     if (!body) {
@@ -188,11 +180,7 @@ export function SmsMessenger() {
     setSending(true);
     try {
       const id = await queueSmsMessage({ phone, body, role: user.role, senderName: user.fullName ?? user.username });
-      if (composing && newName.trim()) await saveSmsContact({ phone, name: newName, role: user.role });
       setDraft('');
-      setNewPhone('');
-      setNewName('');
-      setComposing(false);
       setActivePhone(phone);
       await load();
       // Saved first, delivered second, and the delivery is not waited for.
@@ -236,18 +224,6 @@ export function SmsMessenger() {
     <View style={[styles.sidebar, wide && styles.sidebarWide]}>
       <View style={styles.sidebarHead}>
         <Text style={styles.sidebarTitle}>Chats</Text>
-        <Pressable
-          onPress={() => {
-            setComposing(true);
-            setNameDraft(null);
-            setSendError(null);
-          }}
-          style={[styles.smallBtn, { backgroundColor: theme.primary }]}
-          accessibilityRole="button"
-          accessibilityLabel="New message"
-        >
-          <Text style={styles.smallBtnText}>New</Text>
-        </Pressable>
       </View>
       <TextInput
         style={[styles.field, styles.search]}
@@ -260,7 +236,9 @@ export function SmsMessenger() {
         {loading ? <Text style={styles.muted}>Loading…</Text> : null}
         {!loading && shownChats.length === 0 ? (
           <Text style={styles.muted}>
-            {chats.length === 0 ? 'No chats yet. Start one with New.' : 'Nothing matches that search.'}
+            {chats.length === 0
+              ? 'No chats yet. One starts when you accept an emergency on the Map: the reporter is texted, and the chat appears here.'
+              : 'Nothing matches that search.'}
           </Text>
         ) : null}
         {shownChats.map((chat) => (
@@ -296,19 +274,11 @@ export function SmsMessenger() {
     <View style={styles.thread}>
       <View style={styles.threadHead}>
         {!wide ? (
-          <Pressable
-            onPress={() => {
-              setComposing(false);
-              setActivePhone(null);
-            }}
-            hitSlop={8}
-          >
+          <Pressable onPress={() => setActivePhone(null)} hitSlop={8}>
             <Text style={[styles.linkText, { color: theme.primary }]}>Back</Text>
           </Pressable>
         ) : null}
-        {composing ? (
-          <Text style={styles.threadName}>New message</Text>
-        ) : openChat ? (
+        {openChat ? (
           <>
             <View style={[styles.avatar, { backgroundColor: theme.primary }]}>
               <Text style={styles.avatarText}>{initial(openChat.name)}</Text>
@@ -357,20 +327,7 @@ export function SmsMessenger() {
         </View>
       ) : null}
 
-      {composing ? (
-        <View style={styles.newFields}>
-          <Text style={styles.label}>To</Text>
-          <PhoneInput value={newPhone} onChange={setNewPhone} />
-          <Text style={[styles.label, styles.labelSpaced]}>Name (optional)</Text>
-          <TextInput
-            style={styles.field}
-            value={newName}
-            onChangeText={setNewName}
-            placeholder="Save this number under a name"
-            placeholderTextColor={TEXT_SECONDARY}
-          />
-        </View>
-      ) : openChat ? (
+      {openChat ? (
         <ScrollView
           ref={scrollRef}
           style={styles.bubbles}
@@ -401,11 +358,15 @@ export function SmsMessenger() {
         </ScrollView>
       ) : (
         <View style={styles.empty}>
-          <Text style={styles.muted}>Choose a chat, or start a new one.</Text>
+          <Text style={styles.muted}>
+            {chats.length === 0
+              ? 'A chat starts when an emergency is accepted on the Map.'
+              : 'Choose a chat.'}
+          </Text>
         </View>
       )}
 
-      {composing || openChat ? (
+      {openChat ? (
         <View style={styles.composer}>
           {sendError ? <Text style={styles.sendError}>{sendError}</Text> : null}
           <View style={styles.composerRow}>
@@ -540,9 +501,6 @@ const styles = StyleSheet.create({
   nameInput: { flex: 1 },
   notice: { backgroundColor: OFF_WHITE, borderBottomWidth: 1, borderBottomColor: BORDER, padding: Spacing.md },
   noticeText: { fontSize: FontSizes.xs, color: TEXT_PRIMARY, lineHeight: 18 },
-  newFields: { flex: 1, padding: Spacing.md },
-  label: { fontSize: FontSizes.sm, fontWeight: '500', color: TEXT_PRIMARY, marginBottom: Spacing.sm },
-  labelSpaced: { marginTop: Spacing.md },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
   bubbles: { flex: 1, backgroundColor: OFF_WHITE },

@@ -113,7 +113,16 @@ export async function queueSmsMessage(input: {
     ])
     .select('id')
     .single();
-  if (error) throw new Error(explain(error.message));
+  if (error) {
+    // The database's own wording for this is "new row violates row-level
+    // security policy", which tells a responder nothing they can act on.
+    if (/row-level security/i.test(error.message)) {
+      throw new Error(
+        'This message was refused. A chat starts when an emergency is accepted, and only an active responder of the service handling it can write in it.'
+      );
+    }
+    throw new Error(explain(error.message));
+  }
   return String(data.id);
 }
 

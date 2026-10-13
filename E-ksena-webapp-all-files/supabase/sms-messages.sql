@@ -8,24 +8,32 @@
 -- it says which way a message went, who wrote it or which service it concerns.
 -- This table can. The older one is left alone for whatever still writes to it.
 --
+-- HOW A CONVERSATION STARTS
+-- Not by hand. When a responder accepts an emergency, each reporter is sent
+-- one text saying help is on the way (PART 5), and that text is the first
+-- message of their thread. From then on the responder can write to them in
+-- the Messages tab. A responder cannot open a thread with a number of their
+-- own choosing: the rule in PART 2 refuses a message to a number that has no
+-- thread yet.
+--
 -- HOW A MESSAGE TRAVELS
 -- The dashboard never talks to the SMS provider. The provider's key is a
 -- secret, and anything the dashboard holds is public, so the dashboard only
--- queues a message here. Two Supabase functions, which can hold the key, do
--- the rest. Both are in supabase/functions and need no dashboard change:
+-- queues a message here. The team's backend, which holds the key, does the
+-- rest:
 --
 --   Outgoing  The dashboard inserts a row with direction 'outbound' and status
---             'queued', then asks the send-sms function to deliver it. The
---             function sends it through UniSMS and sets status to 'sent' with
---             provider_message_id, or to 'failed' with the reason in error.
---   Incoming  UniSMS calls the sms-inbound function with each reply, and it
---             inserts a row with direction 'inbound' and status 'received',
---             copying service_type from the newest outbound row to that number.
+--             'queued', then asks the backend (POST /api/sms/send) to deliver
+--             it. The backend sends it through UniSMS and sets status to
+--             'sent' with provider_message_id, or to 'failed' with the reason
+--             in error.
+--   Incoming  UniSMS calls the backend (POST /api/sms/webhook) with each
+--             reply, and it inserts a row with direction 'inbound' and status
+--             'received'.
 --
--- The functions use the service-role key, so the policies below do not bind
--- them. Until they are deployed and given a UniSMS key, a message written
--- on the dashboard stays 'queued' and no text reaches a phone. The dashboard
--- says so on screen. supabase/functions/README.md has the steps.
+-- The backend uses the service-role key, so the policies below do not bind
+-- it. While it cannot be reached, a message written on the dashboard stays
+-- 'queued' and no text reaches a phone. The dashboard says so on screen.
 --
 -- WHO SEES A THREAD
 -- A caller's number and what they wrote are personal data, so a thread is
@@ -99,9 +107,38 @@ CREATE POLICY "Responders read their service threads" ON public.sms_messages
     )
   );
 
+-- A conversation is started by accepting an emergency, never by hand. The
+-- Accept texts the reporter (PART 5), and that text is the first message of
+-- the thread; a text that arrives from a caller starts one as well. This asks
+-- whether a number already has a thread that the caller's own service can
+-- see. It is a function because a rule on this table cannot read the table
+-- itself, and it works out the service from the caller, so that it answers
+-- "no" to anyone who is not an active responder and cannot be used to find
+-- out whose number has been in touch with which service.
+CREATE OR REPLACE FUNCTION public.sms_thread_exists(thread_phone TEXT)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.sms_messages m
+    JOIN public.responders r
+      ON r.auth_user_id = auth.uid()
+     AND COALESCE(r.is_active, true)
+    WHERE m.phone = thread_phone
+      AND (m.service_type IS NULL OR m.service_type = r.service_type)
+  );
+$$;
+
+GRANT EXECUTE ON FUNCTION public.sms_thread_exists(TEXT) TO authenticated;
+
 -- A responder may only queue an outgoing message, in their own name and for
--- their own service. Marking a message sent, or adding an incoming one, is the
--- backend's job: a client that could do either could fake a conversation.
+-- their own service, to a number that already has a thread. Marking a message
+-- sent, or adding an incoming one, is the backend's job: a client that could
+-- do either could fake a conversation.
 DROP POLICY IF EXISTS "Responders queue outgoing messages" ON public.sms_messages;
 CREATE POLICY "Responders queue outgoing messages" ON public.sms_messages
   FOR INSERT
@@ -118,6 +155,7 @@ CREATE POLICY "Responders queue outgoing messages" ON public.sms_messages
         AND COALESCE(r.is_active, true)
         AND r.service_type = sms_messages.service_type
     )
+    AND public.sms_thread_exists(phone)
   );
 
 -- No UPDATE and no DELETE policy, on purpose: under row level security that
