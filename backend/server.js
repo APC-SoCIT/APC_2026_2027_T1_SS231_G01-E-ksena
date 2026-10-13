@@ -602,15 +602,15 @@ app.post('/api/sms/send', requireAuth, async (req, res) => {
     }
   }
 
-  let { phoneNumber, message, messageId } = req.body;
+  const { messageId } = req.body;
 
-  // 2. Strict Requirement: messageId is required for all SMS sends
+  // 2. Strict Requirement: messageId is required
   if (!messageId) {
-    return res.status(400).json({
-      success: false,
-      error: 'Missing required field: messageId. Direct SMS sending is disabled; chats must be tied to an active incident message record.'
-    });
+    return res.status(400).json({ success: false, error: 'messageId is required' });
   }
+
+  let phoneNumber = null;
+  let message = null;
 
   // Verify row exists and is direction = 'outbound' and status = 'queued'
   try {
@@ -636,9 +636,9 @@ app.post('/api/sms/send', requireAuth, async (req, res) => {
       });
     }
 
-    // Always use the phone and body recorded in the database
-    phoneNumber = dbMsg.phone || dbMsg.recipient_phone || dbMsg.recipient || phoneNumber;
-    message = dbMsg.body || dbMsg.content || dbMsg.message || message;
+    // Read exclusively from the database row (no client fallback)
+    phoneNumber = dbMsg.phone || dbMsg.recipient_phone || dbMsg.recipient;
+    message = dbMsg.body || dbMsg.content || dbMsg.message;
   } catch (fetchErr) {
     console.error('[SMS] Exception querying sms_messages by messageId:', fetchErr);
     return res.status(500).json({
