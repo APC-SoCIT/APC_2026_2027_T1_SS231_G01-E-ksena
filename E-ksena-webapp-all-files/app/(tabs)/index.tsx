@@ -38,7 +38,7 @@ import { PrimaryButton } from '@/components/primary-button';
 import { recordDispatchAction } from '@/lib/audit';
 import { notifyReportersAccepted, type AcceptanceNotice } from '@/lib/sms-messages';
 import { ResponderVideoPlayer } from '@/components/responder-video-player';
-import { AssignedResponder } from '@/components/assigned-responder';
+import { ReporterDetails } from '@/components/reporter-details';
 import { publicVideoUrl } from '@/lib/incident-video';
 import {
   getEmergencyTypesForRole,
@@ -555,11 +555,12 @@ export default function MapScreen() {
     .map((member) => member.details)
     .filter((details): details is string => !!details);
 
-  // A grouped card stands for several incidents, any of which may have had
-  // someone assigned, so the assignment lookup is given all of them.
-  const selectedIncidentIds = (selectedGroup?.members ?? [])
-    .map((member) => member.incidentId)
-    .filter((id): id is string => !!id);
+  // A grouped card stands for several reports, each of which may have come
+  // from a different person, so the reporter lookup is given all of them.
+  const selectedReportRefs = (selectedGroup?.members ?? []).map((member) => ({
+    id: member.id,
+    timestamp: member.timestamp ?? null,
+  }));
 
   const distanceText = route?.distance?.text ?? (straightLineKm != null ? `~${straightLineKm.toFixed(2)} km` : '—');
   // Distance already falls back to a straight-line figure when there is no
@@ -636,7 +637,7 @@ export default function MapScreen() {
             </Text>
           ) : null}
 
-          <AssignedResponder incidentIds={selectedIncidentIds} refreshKey={selectedReport.status} />
+          <ReporterDetails reports={selectedReportRefs} />
 
           {statusError ? <Text style={styles.statusErrorText}>{statusError}</Text> : null}
 
@@ -735,7 +736,7 @@ export default function MapScreen() {
               Straight-line distance: ~{straightLineKm.toFixed(2)} km (turn-by-turn route unavailable)
             </Text>
           ) : null}
-          <AssignedResponder incidentIds={selectedIncidentIds} refreshKey={selectedReport.status} />
+          <ReporterDetails reports={selectedReportRefs} />
 
           {statusError ? <Text style={styles.statusErrorText}>{statusError}</Text> : null}
           {!selectedReport.outsideArea && nextStatusAction(selectedReport.status) ? (

@@ -273,9 +273,15 @@ AS $$
   ),
   mine AS (
     SELECT rp.report_id::TEXT AS report_id,
-           regexp_replace(
-             COALESCE(NULLIF(btrim(i.user_phone_number), ''), NULLIF(btrim(u.user_phone_number), ''), ''),
-             '[^0-9]', '', 'g'
+           -- The digits of the number on the incident or, failing that, of the
+           -- one on the profile. Compared after everything but digits is
+           -- stripped, because the phone app writes the word "unknown" on an
+           -- incident when it has no number, and that must not hide the
+           -- number on the profile.
+           COALESCE(
+             NULLIF(regexp_replace(COALESCE(i.user_phone_number, ''), '[^0-9]', '', 'g'), ''),
+             NULLIF(regexp_replace(COALESCE(u.user_phone_number, ''), '[^0-9]', '', 'g'), ''),
+             ''
            ) AS digits
     FROM public.reports rp
     LEFT JOIN public.incidents i ON i.incident_id::TEXT = rp.incident_id::TEXT
