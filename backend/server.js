@@ -695,7 +695,7 @@ app.post('/api/sms/send', requireAuth, async (req, res) => {
       });
     } else {
       // Alphanumeric / standard sender_id route
-      const senderId = process.env.UNISMS_SENDER_ID || 'UniSMS';
+      const senderId = process.env.UNISMS_SENDER_ID || 'Unisoft';
       unismsResponse = await fetch('https://unismsapi.com/api/sms', {
         method: 'POST',
         headers: {
