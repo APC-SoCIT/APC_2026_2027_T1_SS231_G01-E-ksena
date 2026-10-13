@@ -224,6 +224,8 @@ const VideoCameraScreen: React.FC = () => {
           style={styles.camera}
           facing={cameraType}
           mode="video"
+          videoQuality="480p"
+          videoBitrate={1500000}
         />
 
         {isRecording && (
