@@ -158,9 +158,12 @@ const VideoCameraScreen: React.FC = () => {
          throw new Error(`[URL: ${process.env.EXPO_PUBLIC_API_BASE_URL}] Failed to create incident on server: ${result.message}`);
       }
       
-      const aiResult = result.report?.description ? result.report.description : 'Your video was successfully analyzed and responders are notified!';
+      const rawResult = result.report?.description?.replace(/Emergency\s*null\s*incident/gi, '')?.trim();
+      const aiResult = rawResult && rawResult !== 'Emergency Incident'
+        ? rawResult
+        : 'Emergency Incident (Responders Notified)';
       
-      Alert.alert('Emergency Detected!', `AI Analysis complete.\n\nDetected: ${aiResult}\n\nHelp is on the way!`, [
+      Alert.alert('Emergency Detected!', `AI Classification complete.\n\nClassified: ${aiResult}\n\nHelp is on the way!`, [
         { text: 'OK', onPress: () => navigation.navigate('MainTabs' as any) }
       ]);
       
@@ -242,7 +245,7 @@ const VideoCameraScreen: React.FC = () => {
           <View style={styles.aiOverlay}>
             <View style={styles.aiAlert}>
               <ActivityIndicator size="large" color="#ffffff" />
-              <Text style={styles.aiAlertText}>Analyzing...</Text>
+              <Text style={styles.aiAlertText}>Classifying...</Text>
               <Text style={styles.aiSubText}>
                 AI is verifying the emergency
               </Text>

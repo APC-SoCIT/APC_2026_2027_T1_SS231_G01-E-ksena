@@ -355,14 +355,16 @@ app.get('/api/incident/:incidentId', async (req, res) => {
     let responderBase = null;
     let assignedDispatcher = null;
     let responderPhoneNumber = null;
+    let responder = null;
 
     if (dispatchRow && dispatchRow.responder_id) {
       console.log(`[DEBUG] Fetching responder info for dispatch responder_id: ${dispatchRow.responder_id}`);
-      const { data: responder, error: responderError } = await supabase
+      const { data: responderData, error: responderError } = await supabase
         .from('responders')
         .select('responder_id, name, responder_phone_number, responder_location_lat, responder_location_lng, station_address, service_type')
         .eq('responder_id', dispatchRow.responder_id)
         .single();
+      responder = responderData;
 
       if (!responderError && responder) {
         console.log(`[DEBUG] Responder data retrieved:`, responder);
@@ -402,14 +404,25 @@ app.get('/api/incident/:incidentId', async (req, res) => {
       console.log(`[DEBUG] No dispatch record found for incident ${incident.incident_id} yet`);
     }
 
+    // Fetch AI analysis for this incident to get detected service type
+    const { data: aiRow } = await supabase
+      .from('ai_analysis')
+      .select('detected_service_type, service_type, confidence_score')
+      .eq('incident_id', incident.incident_id)
+      .order('analysis_timestamp', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const detectedServiceType = aiRow?.detected_service_type || aiRow?.service_type || (assignedDispatcher ? responder?.service_type : null) || 'general';
+
     res.json({
       success: true,
       incident: {
         id: incident.incident_id,
         user_phone_number: incident.user_phone_number,
         responder_phone_number: responderPhoneNumber,
-        // service_type is derived from AI analysis / responder, not stored directly on the incident row
-        service_type: null,
+        service_type: detectedServiceType,
+        confidence_score: aiRow?.confidence_score || null,
         location: {
           latitude: parseFloat(incident.incident_location_lat),
           longitude: parseFloat(incident.incident_location_lng),

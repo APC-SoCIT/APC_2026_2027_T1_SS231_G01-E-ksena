@@ -515,7 +515,9 @@ export const getIncidentDetails = async (incidentId: string): Promise<ReportResp
             address: backendIncident.responder_base.address ?? undefined,
           }
           : undefined,
-        description: `Emergency ${backendIncident.service_type} incident`,
+        description: backendIncident.service_type
+          ? `${backendIncident.service_type.charAt(0).toUpperCase() + backendIncident.service_type.slice(1)} Emergency`
+          : 'Emergency Incident',
       };
 
       console.log('[REAL API] Mapped report:', {
