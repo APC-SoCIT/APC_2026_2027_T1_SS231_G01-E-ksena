@@ -18,18 +18,18 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 
 // Middleware
-const allowedOrigins = process.env.ALLOWED_ORIGINS 
-  ? process.env.ALLOWED_ORIGINS.split(',') 
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',')
   : ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:8081', 'http://localhost:5173'];
 
 app.use(cors({
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps or curl requests)
     if (
-      !origin || 
-      allowedOrigins.includes(origin) || 
-      origin.includes('vercel.app') || 
-      origin.includes('localhost') || 
+      !origin ||
+      allowedOrigins.includes(origin) ||
+      origin.includes('vercel.app') ||
+      origin.includes('localhost') ||
       origin.includes('127.0.0.1') ||
       process.env.NODE_ENV === 'development'
     ) {
@@ -104,7 +104,7 @@ const requireAuth = async (req, res, next) => {
   }
 
   const token = authHeader.split(' ')[1];
-  
+
   // Accept an API secret for service-to-service calls or Supabase JWT for users
   if (token === process.env.API_SECRET_KEY) {
     req.user = { role: 'service_account' };
@@ -116,7 +116,7 @@ const requireAuth = async (req, res, next) => {
   if (error || !user) {
     return res.status(401).json({ success: false, error: 'Unauthorized: Invalid token' });
   }
-  
+
   req.user = user;
   next();
 };
@@ -127,10 +127,10 @@ const requireResponderRole = (req, res, next) => {
   if (req.user && req.user.role === 'service_account') {
     return next(); // service accounts bypass role checks
   }
-  
+
   // TODO: Add actual check if user is a responder
   console.log(`[AUTH] Checking responder role for user ${req.user?.id}`);
-  
+
   // We'll let it pass for now so we don't break existing flows, but log it
   next();
 };
@@ -192,7 +192,7 @@ app.post('/api/report-incident', async (req, res) => {
     // Call the Python AI Microservice to analyze the video
     try {
       console.log(`[AI] Sending video to AI Microservice for incident ${incident.incident_id}...`);
-      
+
       let detectedService = 'medical'; // Fallback
       let confidence = 0.85;
 
@@ -203,7 +203,7 @@ app.post('/api/report-incident', async (req, res) => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ video_url: video_url })
         });
-        
+
         if (aiResponse.ok) {
           const aiResult = await aiResponse.json();
           if (aiResult.success) {
@@ -211,7 +211,7 @@ app.post('/api/report-incident', async (req, res) => {
             confidence = aiResult.confidence_score;
             console.log(`[AI] AI classified video as: ${detectedService} (Confidence: ${confidence})`);
           } else {
-             console.log(`[AI] AI Service returned error: ${aiResult.error}. Using fallback.`);
+            console.log(`[AI] AI Service returned error: ${aiResult.error}. Using fallback.`);
           }
         } else {
           console.log(`[AI] AI Service unreachable (Status: ${aiResponse.status}). Using fallback classification.`);
@@ -604,40 +604,47 @@ app.post('/api/sms/send', requireAuth, async (req, res) => {
 
   let { phoneNumber, message, messageId } = req.body;
 
-  // 2. Data source & Guard: If messageId is provided, verify direction = 'outbound' and status = 'queued'
-  if (messageId) {
-    try {
-      const { data: dbMsg, error: dbMsgError } = await supabase
-        .from('sms_messages')
-        .select('*')
-        .eq('id', messageId)
-        .maybeSingle();
+  // 2. Strict Requirement: messageId is required for all SMS sends
+  if (!messageId) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing required field: messageId. Direct SMS sending is disabled; chats must be tied to an active incident message record.'
+    });
+  }
 
-      if (!dbMsg) {
-        return res.status(404).json({
-          success: false,
-          error: `Message with id ${messageId} not found in sms_messages`
-        });
-      }
+  // Verify row exists and is direction = 'outbound' and status = 'queued'
+  try {
+    const { data: dbMsg, error: dbMsgError } = await supabase
+      .from('sms_messages')
+      .select('*')
+      .eq('id', messageId)
+      .maybeSingle();
 
-      // Ensure it is outbound and queued so old or already-sent messages cannot be resent
-      if (dbMsg.direction !== 'outbound' || dbMsg.status !== 'queued') {
-        console.warn(`[SMS] ⛔ Message ${messageId} cannot be sent: direction='${dbMsg.direction}', status='${dbMsg.status}' (must be direction='outbound' and status='queued')`);
-        return res.status(400).json({
-          success: false,
-          error: `Message cannot be resent. Current status: '${dbMsg.status}', direction: '${dbMsg.direction}'. Only queued outbound messages can be sent.`
-        });
-      }
-
-      phoneNumber = dbMsg.phone || dbMsg.recipient_phone || dbMsg.recipient || phoneNumber;
-      message = dbMsg.body || dbMsg.content || dbMsg.message || message;
-    } catch (fetchErr) {
-      console.error('[SMS] Exception querying sms_messages by messageId:', fetchErr);
-      return res.status(500).json({
+    if (!dbMsg) {
+      return res.status(404).json({
         success: false,
-        error: 'Database error validating messageId'
+        error: `Message with id ${messageId} not found in sms_messages`
       });
     }
+
+    // Ensure it is outbound and queued so old or already-sent messages cannot be resent
+    if (dbMsg.direction !== 'outbound' || dbMsg.status !== 'queued') {
+      console.warn(`[SMS] ⛔ Message ${messageId} cannot be sent: direction='${dbMsg.direction}', status='${dbMsg.status}' (must be direction='outbound' and status='queued')`);
+      return res.status(400).json({
+        success: false,
+        error: `Message cannot be resent. Current status: '${dbMsg.status}', direction: '${dbMsg.direction}'. Only queued outbound messages can be sent.`
+      });
+    }
+
+    // Always use the phone and body recorded in the database
+    phoneNumber = dbMsg.phone || dbMsg.recipient_phone || dbMsg.recipient || phoneNumber;
+    message = dbMsg.body || dbMsg.content || dbMsg.message || message;
+  } catch (fetchErr) {
+    console.error('[SMS] Exception querying sms_messages by messageId:', fetchErr);
+    return res.status(500).json({
+      success: false,
+      error: 'Database error validating messageId'
+    });
   }
 
   phoneNumber = normalizePhilippinePhone(phoneNumber);
@@ -779,9 +786,9 @@ app.post('/api/sms/webhook', async (req, res) => {
       return res.status(401).json({ success: false, error: 'Webhook secret is not configured on server' });
     }
 
-    const incomingSecret = 
-      req.headers['webhook-secret-key'] || 
-      req.headers['x-webhook-secret'] || 
+    const incomingSecret =
+      req.headers['webhook-secret-key'] ||
+      req.headers['x-webhook-secret'] ||
       req.headers['x-api-key'];
 
     if (!incomingSecret || incomingSecret !== expectedSecret) {
@@ -793,30 +800,30 @@ app.post('/api/sms/webhook', async (req, res) => {
     console.log('[SMS WEBHOOK] Inbound event received for messageId:', payload.message?.id || payload.id || 'N/A');
 
     // Support nested payload format (payload.message.*) for txt.received, as well as top-level fields
-    const rawPhone = 
-      payload.message?.from || 
-      payload.message?.sender || 
-      payload.from || 
-      payload.sender || 
-      payload.phone || 
-      payload.data?.phone || 
+    const rawPhone =
+      payload.message?.from ||
+      payload.message?.sender ||
+      payload.from ||
+      payload.sender ||
+      payload.phone ||
+      payload.data?.phone ||
       payload.data?.from;
 
-    const body = 
-      payload.message?.content || 
-      payload.message?.text || 
-      payload.message?.body || 
-      payload.content || 
-      payload.text || 
-      payload.body || 
-      payload.data?.content || 
+    const body =
+      payload.message?.content ||
+      payload.message?.text ||
+      payload.message?.body ||
+      payload.content ||
+      payload.text ||
+      payload.body ||
+      payload.data?.content ||
       payload.data?.text;
 
-    const providerMessageId = 
-      payload.message?.id || 
-      payload.message?.message_id || 
-      payload.id || 
-      payload.message_id || 
+    const providerMessageId =
+      payload.message?.id ||
+      payload.message?.message_id ||
+      payload.id ||
+      payload.message_id ||
       payload.data?.id;
 
     const phone = normalizePhilippinePhone(rawPhone);
