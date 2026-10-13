@@ -582,29 +582,29 @@ const normalizePhilippinePhone = (rawPhone) => {
 // ENDPOINT: Send SMS via UniSMS (Web App / Dispatcher)
 // ============================================
 app.post('/api/sms/send', requireAuth, async (req, res) => {
-  // 1. Authorization check: only responders, admins, or service accounts may send SMS
+  // 1. Authorization check: only active responders, admins, or service accounts may send SMS
   const userId = req.user?.id;
   const isServiceAccount = req.user?.role === 'service_account';
 
   if (!isServiceAccount) {
     const [responderRes, adminRes] = await Promise.all([
-      supabase.from('responders').select('responder_id').eq('auth_user_id', userId).maybeSingle(),
+      supabase.from('responders').select('responder_id').eq('auth_user_id', userId).eq('is_active', true).maybeSingle(),
       supabase.from('admins').select('auth_user_id').eq('auth_user_id', userId).maybeSingle()
     ]);
 
     const isAuthorized = Boolean(responderRes?.data || adminRes?.data);
     if (!isAuthorized) {
-      console.warn(`[SMS] ⛔ Unauthorized send attempt by user ${userId} (not in responders/admins table)`);
+      console.warn(`[SMS] ⛔ Unauthorized send attempt by user ${userId} (not an active responder/admin)`);
       return res.status(403).json({
         success: false,
-        error: 'Forbidden: Only verified responders or dispatchers may send SMS messages'
+        error: 'Forbidden: Only active responders or dispatchers may send SMS messages'
       });
     }
   }
 
   let { phoneNumber, message, messageId } = req.body;
 
-  // 2. Data source: If messageId is provided, read phone and body directly from the sms_messages table to prevent client tampering
+  // 2. Data source & Guard: If messageId is provided, verify direction = 'outbound' and status = 'queued'
   if (messageId) {
     try {
       const { data: dbMsg, error: dbMsgError } = await supabase
@@ -613,12 +613,30 @@ app.post('/api/sms/send', requireAuth, async (req, res) => {
         .eq('id', messageId)
         .maybeSingle();
 
-      if (dbMsg) {
-        phoneNumber = dbMsg.phone || dbMsg.recipient_phone || dbMsg.recipient || phoneNumber;
-        message = dbMsg.body || dbMsg.content || dbMsg.message || message;
+      if (!dbMsg) {
+        return res.status(404).json({
+          success: false,
+          error: `Message with id ${messageId} not found in sms_messages`
+        });
       }
+
+      // Ensure it is outbound and queued so old or already-sent messages cannot be resent
+      if (dbMsg.direction !== 'outbound' || dbMsg.status !== 'queued') {
+        console.warn(`[SMS] ⛔ Message ${messageId} cannot be sent: direction='${dbMsg.direction}', status='${dbMsg.status}' (must be direction='outbound' and status='queued')`);
+        return res.status(400).json({
+          success: false,
+          error: `Message cannot be resent. Current status: '${dbMsg.status}', direction: '${dbMsg.direction}'. Only queued outbound messages can be sent.`
+        });
+      }
+
+      phoneNumber = dbMsg.phone || dbMsg.recipient_phone || dbMsg.recipient || phoneNumber;
+      message = dbMsg.body || dbMsg.content || dbMsg.message || message;
     } catch (fetchErr) {
-      console.warn('[SMS] Could not query sms_messages by messageId, using request body fallback:', fetchErr);
+      console.error('[SMS] Exception querying sms_messages by messageId:', fetchErr);
+      return res.status(500).json({
+        success: false,
+        error: 'Database error validating messageId'
+      });
     }
   }
 
@@ -650,21 +668,40 @@ app.post('/api/sms/send', requireAuth, async (req, res) => {
     console.log(`[SMS] Sending UniSMS to ${phoneNumber} (messageId: ${messageId || 'none'})...`);
 
     const authHeader = 'Basic ' + Buffer.from(`${apiKey}:`).toString('base64');
-    // For two-way replies a virtual number is required; fallback to sender_id if not configured
-    const senderId = process.env.UNISMS_VIRTUAL_NUMBER || process.env.UNISMS_SENDER_ID || 'UniSMS';
+    const virtualNumber = process.env.UNISMS_VIRTUAL_NUMBER;
 
-    const unismsResponse = await fetch('https://unismsapi.com/api/sms', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': authHeader
-      },
-      body: JSON.stringify({
-        recipient: phoneNumber,
-        content: message,
-        sender_id: senderId
-      })
-    });
+    let unismsResponse;
+    if (virtualNumber) {
+      // 2-way SMS with virtual number
+      console.log(`[SMS] Using Virtual Number route: ${virtualNumber}`);
+      unismsResponse = await fetch('https://unismsapi.com/api/virtual_numbers/sms', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': authHeader
+        },
+        body: JSON.stringify({
+          from: virtualNumber,
+          to: phoneNumber,
+          content: message
+        })
+      });
+    } else {
+      // Alphanumeric / standard sender_id route
+      const senderId = process.env.UNISMS_SENDER_ID || 'UniSMS';
+      unismsResponse = await fetch('https://unismsapi.com/api/sms', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': authHeader
+        },
+        body: JSON.stringify({
+          recipient: phoneNumber,
+          content: message,
+          sender_id: senderId
+        })
+      });
+    }
 
     const unismsResult = await unismsResponse.json();
     console.log('[SMS] UniSMS response status:', unismsResponse.status, 'body:', unismsResult);
@@ -735,21 +772,25 @@ app.post('/api/sms/send', requireAuth, async (req, res) => {
 // ============================================
 app.post('/api/sms/webhook', async (req, res) => {
   try {
-    // 1. Verify webhook-secret-key header if configured
+    // 1. Strict Webhook Secret Verification: reject if secret is not configured or mismatch
     const expectedSecret = process.env.UNISMS_WEBHOOK_SECRET;
+    if (!expectedSecret) {
+      console.warn('[SMS WEBHOOK] ⛔ Rejected: UNISMS_WEBHOOK_SECRET is not configured on the server');
+      return res.status(401).json({ success: false, error: 'Webhook secret is not configured on server' });
+    }
+
     const incomingSecret = 
       req.headers['webhook-secret-key'] || 
       req.headers['x-webhook-secret'] || 
       req.headers['x-api-key'];
 
-    if (expectedSecret && incomingSecret !== expectedSecret) {
-      console.warn('[SMS WEBHOOK] ⛔ Unauthorized webhook request: Invalid webhook-secret-key header');
-      return res.status(401).json({ success: false, error: 'Unauthorized webhook request' });
+    if (!incomingSecret || incomingSecret !== expectedSecret) {
+      console.warn('[SMS WEBHOOK] ⛔ Unauthorized webhook request: Invalid or missing webhook-secret-key header');
+      return res.status(401).json({ success: false, error: 'Unauthorized: Invalid webhook secret' });
     }
 
     const payload = req.body || {};
-    // Log complete incoming webhook payload for confirmation in Render logs
-    console.log('[SMS WEBHOOK] 📩 Inbound UniSMS webhook event:', JSON.stringify(payload, null, 2));
+    console.log('[SMS WEBHOOK] Inbound event received for messageId:', payload.message?.id || payload.id || 'N/A');
 
     // Support nested payload format (payload.message.*) for txt.received, as well as top-level fields
     const rawPhone = 
