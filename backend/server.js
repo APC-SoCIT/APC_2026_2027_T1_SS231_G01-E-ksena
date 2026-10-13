@@ -546,11 +546,70 @@ app.get('/api/incident/:incidentId/responder-location', async (req, res) => {
   }
 });
 
+// Helper: Normalize Philippine phone numbers to E.164 (+639XXXXXXXXX)
+const normalizePhilippinePhone = (rawPhone) => {
+  if (!rawPhone) return null;
+  let cleaned = String(rawPhone).trim().replace(/[\s\-\(\)]/g, '');
+  if (cleaned.startsWith('09') && cleaned.length === 11) {
+    return '+63' + cleaned.slice(1);
+  }
+  if (cleaned.startsWith('9') && cleaned.length === 10) {
+    return '+63' + cleaned;
+  }
+  if (cleaned.startsWith('639') && cleaned.length === 12) {
+    return '+' + cleaned;
+  }
+  if (cleaned.startsWith('+639')) {
+    return cleaned;
+  }
+  return cleaned;
+};
+
 // ============================================
 // ENDPOINT: Send SMS via UniSMS (Web App / Dispatcher)
 // ============================================
 app.post('/api/sms/send', requireAuth, async (req, res) => {
-  const { phoneNumber, message, messageId } = req.body;
+  // 1. Authorization check: only responders, admins, or service accounts may send SMS
+  const userId = req.user?.id;
+  const isServiceAccount = req.user?.role === 'service_account';
+
+  if (!isServiceAccount) {
+    const [responderRes, adminRes] = await Promise.all([
+      supabase.from('responders').select('responder_id').eq('auth_user_id', userId).maybeSingle(),
+      supabase.from('admins').select('auth_user_id').eq('auth_user_id', userId).maybeSingle()
+    ]);
+
+    const isAuthorized = Boolean(responderRes?.data || adminRes?.data);
+    if (!isAuthorized) {
+      console.warn(`[SMS] ⛔ Unauthorized send attempt by user ${userId} (not in responders/admins table)`);
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden: Only verified responders or dispatchers may send SMS messages'
+      });
+    }
+  }
+
+  let { phoneNumber, message, messageId } = req.body;
+
+  // 2. Data source: If messageId is provided, read phone and body directly from the sms_messages table to prevent client tampering
+  if (messageId) {
+    try {
+      const { data: dbMsg, error: dbMsgError } = await supabase
+        .from('sms_messages')
+        .select('*')
+        .eq('id', messageId)
+        .maybeSingle();
+
+      if (dbMsg) {
+        phoneNumber = dbMsg.phone || dbMsg.recipient_phone || dbMsg.recipient || phoneNumber;
+        message = dbMsg.body || dbMsg.content || dbMsg.message || message;
+      }
+    } catch (fetchErr) {
+      console.warn('[SMS] Could not query sms_messages by messageId, using request body fallback:', fetchErr);
+    }
+  }
+
+  phoneNumber = normalizePhilippinePhone(phoneNumber);
 
   if (!phoneNumber || !message) {
     return res.status(400).json({
@@ -578,7 +637,8 @@ app.post('/api/sms/send', requireAuth, async (req, res) => {
     console.log(`[SMS] Sending UniSMS to ${phoneNumber} (messageId: ${messageId || 'none'})...`);
 
     const authHeader = 'Basic ' + Buffer.from(`${apiKey}:`).toString('base64');
-    const senderId = process.env.UNISMS_SENDER_ID || 'UniSMS';
+    // For two-way replies a virtual number is required; fallback to sender_id if not configured
+    const senderId = process.env.UNISMS_VIRTUAL_NUMBER || process.env.UNISMS_SENDER_ID || 'UniSMS';
 
     const unismsResponse = await fetch('https://unismsapi.com/api/sms', {
       method: 'POST',
@@ -662,12 +722,50 @@ app.post('/api/sms/send', requireAuth, async (req, res) => {
 // ============================================
 app.post('/api/sms/webhook', async (req, res) => {
   try {
-    const payload = req.body || {};
-    console.log('[SMS WEBHOOK] Inbound UniSMS webhook event:', JSON.stringify(payload));
+    // 1. Verify webhook-secret-key header if configured
+    const expectedSecret = process.env.UNISMS_WEBHOOK_SECRET;
+    const incomingSecret = 
+      req.headers['webhook-secret-key'] || 
+      req.headers['x-webhook-secret'] || 
+      req.headers['x-api-key'];
 
-    const phone = payload.from || payload.sender || payload.phone || payload.data?.phone || payload.data?.from;
-    const body = payload.content || payload.text || payload.body || payload.data?.content || payload.data?.text;
-    const providerMessageId = payload.id || payload.message_id || payload.data?.id;
+    if (expectedSecret && incomingSecret !== expectedSecret) {
+      console.warn('[SMS WEBHOOK] ⛔ Unauthorized webhook request: Invalid webhook-secret-key header');
+      return res.status(401).json({ success: false, error: 'Unauthorized webhook request' });
+    }
+
+    const payload = req.body || {};
+    // Log complete incoming webhook payload for confirmation in Render logs
+    console.log('[SMS WEBHOOK] 📩 Inbound UniSMS webhook event:', JSON.stringify(payload, null, 2));
+
+    // Support nested payload format (payload.message.*) for txt.received, as well as top-level fields
+    const rawPhone = 
+      payload.message?.from || 
+      payload.message?.sender || 
+      payload.from || 
+      payload.sender || 
+      payload.phone || 
+      payload.data?.phone || 
+      payload.data?.from;
+
+    const body = 
+      payload.message?.content || 
+      payload.message?.text || 
+      payload.message?.body || 
+      payload.content || 
+      payload.text || 
+      payload.body || 
+      payload.data?.content || 
+      payload.data?.text;
+
+    const providerMessageId = 
+      payload.message?.id || 
+      payload.message?.message_id || 
+      payload.id || 
+      payload.message_id || 
+      payload.data?.id;
+
+    const phone = normalizePhilippinePhone(rawPhone);
 
     if (phone && body) {
       const { error: insertError } = await supabase
@@ -681,10 +779,12 @@ app.post('/api/sms/webhook', async (req, res) => {
         });
 
       if (insertError) {
-        console.error('[SMS WEBHOOK] Failed to insert inbound message:', insertError);
+        console.error('[SMS WEBHOOK] Failed to insert inbound message into sms_messages:', insertError);
       } else {
-        console.log(`[SMS WEBHOOK] Successfully recorded inbound SMS from ${phone}`);
+        console.log(`[SMS WEBHOOK] ✅ Successfully recorded inbound SMS from ${phone}`);
       }
+    } else {
+      console.warn('[SMS WEBHOOK] ⚠️ Skipping webhook insert: missing phone or body', { rawPhone, phone, hasBody: !!body });
     }
 
     res.json({ success: true, received: true });
