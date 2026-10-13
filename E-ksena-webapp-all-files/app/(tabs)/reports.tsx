@@ -1,16 +1,18 @@
-import { useState, useCallback, useEffect } from 'react';
-import { View, Text, TextInput, FlatList, Alert, StyleSheet, Pressable } from 'react-native';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { View, Text, TextInput, FlatList, StyleSheet, Pressable, Linking } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import { useJsApiLoader } from '@react-google-maps/api';
 import { supabase } from '@/lib/supabase';
+import { GOOGLE_MAPS_API_KEY } from '@/lib/env';
 import { PrimaryButton } from '@/components/primary-button';
 import { useAuth } from '@/context/auth';
 import { useRoleTheme } from '@/context/role-theme';
+import { publicVideoUrl } from '@/lib/incident-video';
+import { formatManilaTime } from '@/lib/reporter-display';
 import { Spacing, FontSizes, TEXT_PRIMARY, TEXT_SECONDARY, WHITE, OFF_WHITE, BORDER, Radius, CardShadow, DANGER, DANGER_BG, DANGER_BORDER, SUCCESS, SUCCESS_BG } from '@/constants/theme';
 import {
   getEmergencyTypesForRole,
-  defaultEmergencyTypeForRole,
   emergencyTypeLabel,
-  nextStatusAction,
   EMERGENCY_STATUS_LABELS,
   type EmergencyStatus,
 } from '@/lib/emergency';
@@ -23,6 +25,9 @@ interface Report {
   classified_as?: string;
   status?: EmergencyStatus;
   created_at?: string;
+  lat: number | null;
+  lng: number | null;
+  videoUrl: string | null;
 }
 
 function normalizeReport(row: {
@@ -34,6 +39,10 @@ function normalizeReport(row: {
   timestamp?: string;
   classified_as?: string;
   status?: string;
+  report_location_lat?: number | string | null;
+  report_location_lng?: number | string | null;
+  video_path?: string | null;
+  bucket_id?: string | null;
 }): Report {
   const id = row.report_id ?? row.id ?? '';
   const content = row.content ?? '';
@@ -42,6 +51,8 @@ function normalizeReport(row: {
   const title = row.title ?? (firstLine || 'Report');
   const details = rest;
   const created_at = row.timestamp ?? row.created_at;
+  const lat = row.report_location_lat == null ? null : Number(row.report_location_lat);
+  const lng = row.report_location_lng == null ? null : Number(row.report_location_lng);
   return {
     id,
     title,
@@ -50,20 +61,48 @@ function normalizeReport(row: {
     classified_as: row.classified_as,
     status: (row.status as EmergencyStatus) ?? undefined,
     created_at,
+    lat,
+    lng,
+    videoUrl: publicVideoUrl({ video_path: row.video_path ?? null, bucket_id: row.bucket_id ?? null }),
   };
 }
+
+/** A report logged by hand has no position, and is stored at 0, 0. */
+function hasLocation(report: Report): report is Report & { lat: number; lng: number } {
+  return (
+    report.lat != null &&
+    report.lng != null &&
+    !Number.isNaN(report.lat) &&
+    !Number.isNaN(report.lng) &&
+    !(report.lat === 0 && report.lng === 0)
+  );
+}
+
+type OpenReport = { id: string; mode: 'view' | 'edit' };
 
 export default function ReportsScreen() {
   const theme = useRoleTheme();
   const { user } = useAuth();
   const [reports, setReports] = useState<Report[]>([]);
-  const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [pressedEditId, setPressedEditId] = useState<string | null>(null);
+  // The one report shown in the panel above the list, and whether it is being
+  // read or changed. Nothing is open until View or Edit is pressed: a report
+  // cannot be written here, only looked at and added to.
+  const [open, setOpen] = useState<OpenReport | null>(null);
+  const [detailsDraft, setDetailsDraft] = useState('');
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedNote, setSavedNote] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // The same loader the Map uses, with the same options, so the two screens
+  // share one copy of Google Maps instead of asking for it twice.
+  const { isLoaded: mapsLoaded } = useJsApiLoader({
+    id: 'google-map-script',
+    googleMapsApiKey: GOOGLE_MAPS_API_KEY,
+  });
+  const geocoderRef = useRef<google.maps.Geocoder | null>(null);
+  const [addressCache, setAddressCache] = useState<Record<string, string>>({});
+  const listRef = useRef<FlatList<Report> | null>(null);
 
   const allowedTypes = getEmergencyTypesForRole(user?.role);
 
@@ -123,121 +162,178 @@ export default function ReportsScreen() {
     };
   }, [fetchReports, allowedTypes.join(',')]);
 
-  const handleStatusAction = async (report: Report) => {
-    const action = nextStatusAction(report.status ?? 'pending');
-    if (!action) return;
-    const update: Record<string, unknown> = { status: action.next };
-    if (action.next === 'responding') {
-      update.responder_username = user?.username ?? null;
-    }
-    const { error } = await supabase.from('reports').update(update).eq('report_id', report.id);
-    if (error) {
-      Alert.alert('Could not update status', error.message);
-      return;
-    }
-    setReports((prev) => prev.map((r) => (r.id === report.id ? { ...r, status: action.next } : r)));
+  const openReport = open ? reports.find((report) => report.id === open.id) ?? null : null;
+
+  // The address is worked out from the report's position, for the one report
+  // that is open. Doing it for the whole list would mean one paid lookup per
+  // report every time the tab is opened.
+  useEffect(() => {
+    if (!openReport || !mapsLoaded || addressCache[openReport.id]) return;
+    if (!hasLocation(openReport) || typeof google === 'undefined') return;
+    if (!geocoderRef.current) geocoderRef.current = new google.maps.Geocoder();
+    const id = openReport.id;
+    geocoderRef.current.geocode({ location: { lat: openReport.lat, lng: openReport.lng } }, (results, status) => {
+      if (status === 'OK' && results && results[0]) {
+        setAddressCache((prev) => ({ ...prev, [id]: results[0].formatted_address }));
+      }
+    });
+  }, [openReport, mapsLoaded, addressCache]);
+
+  // Until the address arrives, and if it never does, the position itself is
+  // shown: still enough to find the place.
+  const addressText = !openReport
+    ? ''
+    : !hasLocation(openReport)
+      ? 'No location on record'
+      : addressCache[openReport.id] ?? `${openReport.lat.toFixed(5)}, ${openReport.lng.toFixed(5)}`;
+
+  const show = (report: Report, mode: OpenReport['mode']) => {
+    setOpen({ id: report.id, mode });
+    setDetailsDraft(report.details);
+    setSaveError(null);
+    setSavedNote(null);
+    // The panel opens at the top, which may be a long way above the card
+    // whose button was pressed.
+    listRef.current?.scrollToOffset({ offset: 0, animated: true });
+  };
+
+  const close = () => {
+    setOpen(null);
+    setDetailsDraft('');
+    setSaveError(null);
+    setSavedNote(null);
   };
 
   const handleSave = async () => {
-    if (!title.trim() && !content.trim()) {
-      Alert.alert('Missing details', 'Please enter a title or details for the report.');
-      return;
-    }
+    if (!openReport) return;
     setSaving(true);
-    setLoadError(null);
     setSaveError(null);
-    const fullContent = title.trim() ? `${title.trim()}\n${content.trim()}` : content.trim();
-    const responsibleType = defaultEmergencyTypeForRole(user?.role);
+    setSavedNote(null);
+    // The title is the first line of what is stored and is not editable, so it
+    // is written back exactly as it was. Only what follows it changes.
+    const details = detailsDraft.trim();
+    const fullContent = details ? `${openReport.title}\n${details}` : openReport.title;
     try {
-      if (editingId) {
-        const { error } = await supabase
-          .from('reports')
-          .update({ content: fullContent })
-          .eq('report_id', editingId);
-        if (error) throw error;
-        Alert.alert('Saved', 'Report updated.');
-      } else {
-        const { data: authData } = await supabase.auth.getUser();
-        const row: Record<string, unknown> = {
-          user_id: authData.user?.id ?? null,
-          incident_id: null,
-          classified_as: responsibleType,
-          status: 'matched',
-          report_location_lat: 0,
-          report_location_lng: 0,
-          timestamp: new Date().toISOString(),
-          is_processed: false,
-          content: fullContent,
-        };
-        let insertResult = await supabase
-          .from('reports')
-          .insert([row])
-          .select('report_id, classified_as, timestamp, content')
-          .single();
-        if (insertResult.error && /column.*status.*does not exist/i.test(insertResult.error.message)) {
-          const { status: _status, ...rowNoStatus } = row;
-          insertResult = await supabase
-            .from('reports')
-            .insert([rowNoStatus])
-            .select('report_id, classified_as, timestamp, content')
-            .single();
-        }
-        if (insertResult.error) throw insertResult.error;
-        if (insertResult.data) {
-          setReports((prev) => [{ ...normalizeReport(insertResult.data), status: 'matched' }, ...prev]);
-        }
-        Alert.alert('Saved', 'Report saved.');
-      }
-      setTitle('');
-      setContent('');
-      setEditingId(null);
+      const { error } = await supabase.from('reports').update({ content: fullContent }).eq('report_id', openReport.id);
+      if (error) throw error;
       await fetchReports();
+      setOpen({ id: openReport.id, mode: 'view' });
+      setSavedNote('Report updated.');
     } catch (e: unknown) {
       const msg = e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : 'Unknown error';
-      setSaveError(msg);
       const hint = /content.*does not exist/i.test(msg)
         ? ' Run supabase/reports-add-content.sql in Supabase SQL Editor to add the content column.'
         : /policy|permission|rls|row level security/i.test(msg)
-          ? ' Run supabase/reports-rls.sql in SQL Editor to allow insert/select.'
-          : /foreign key|user_id_fkey|incident_id|null value in column.*(user_id|incident_id)/i.test(msg)
-            ? ' Run supabase/reports-allow-null-user.sql in SQL Editor (both user_id and incident_id).'
-            : '';
-      Alert.alert('Save failed', msg + hint);
+          ? ' Run supabase/reports-rls-by-service.sql in the Supabase SQL Editor.'
+          : '';
+      setSaveError(msg + hint);
     } finally {
       setSaving(false);
     }
   };
 
-  return (
-    <View style={styles.screen}>
-      <View style={[styles.card, CardShadow]}>
-        <Text style={styles.sectionTitle}>
-          {editingId ? 'Editing Report' : 'New Report'}
-        </Text>
-        <Text style={styles.label}>Title</Text>
-        <TextInput
-          placeholder="Short title (stored in report)"
-          placeholderTextColor={TEXT_SECONDARY}
-          value={title}
-          onChangeText={setTitle}
-          style={styles.input}
-        />
-        <Text style={styles.label}>Details</Text>
-        <TextInput
-          placeholder="Details (stored in report)"
-          placeholderTextColor={TEXT_SECONDARY}
-          value={content}
-          onChangeText={setContent}
-          style={[styles.input, styles.inputMultiline]}
-          multiline
-        />
-        <PrimaryButton title={saving ? 'Saving…' : 'Save Report'} onPress={handleSave} style={styles.button} disabled={saving} />
-        {saveError ? (
-          <View style={styles.saveErrorBox}>
-            <Text style={styles.saveErrorText}>{saveError}</Text>
+  const outlineButton = (label: string, onPress: () => void, accessibilityLabel: string) => (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      style={({ pressed }) => [styles.outlineBtn, { borderColor: theme.primary }, pressed && { backgroundColor: theme.primary }]}
+    >
+      {({ pressed }) => (
+        <Text style={[styles.outlineBtnText, { color: pressed ? WHITE : theme.primary }]}>{label}</Text>
+      )}
+    </Pressable>
+  );
+
+  const openStatus = openReport?.status ?? 'pending';
+  const reportedAt = openReport ? formatManilaTime(openReport.created_at) : null;
+
+  // The panel rides at the top of the list, not above it, so the two scroll
+  // together. Fixed above the list, a tall panel on a short screen left the
+  // list a sliver to scroll in and could push its own buttons out of reach.
+  const header = (
+    <View>
+      {openReport && open ? (
+        <View style={[styles.card, CardShadow]}>
+          <Text style={styles.sectionTitle}>{open.mode === 'edit' ? 'Editing Report' : 'Report Details'}</Text>
+
+          {/* Shown as fields, and greyed, in both modes: the title and the
+              address come from the report itself and are never typed here. */}
+          <Text style={styles.label}>Title</Text>
+          <View style={styles.readOnlyField}>
+            <Text style={styles.readOnlyText}>{openReport.title}</Text>
           </View>
-        ) : null}
-      </View>
+          <Text style={styles.label}>Address</Text>
+          <View style={styles.readOnlyField}>
+            <Text style={styles.readOnlyText}>{addressText}</Text>
+          </View>
+
+          {open.mode === 'edit' ? (
+            <>
+              <Text style={styles.label}>Details</Text>
+              <TextInput
+                placeholder="Details (stored in report)"
+                placeholderTextColor={TEXT_SECONDARY}
+                value={detailsDraft}
+                onChangeText={setDetailsDraft}
+                style={[styles.input, styles.inputMultiline]}
+                multiline
+              />
+              <View style={styles.panelActions}>
+                <PrimaryButton title={saving ? 'Saving…' : 'Save Report'} onPress={handleSave} disabled={saving} />
+                <Pressable
+                  onPress={close}
+                  disabled={saving}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel editing"
+                  style={styles.plainBtn}
+                >
+                  <Text style={styles.plainBtnText}>Cancel</Text>
+                </Pressable>
+              </View>
+            </>
+          ) : (
+            <>
+              <View style={styles.factRow}>
+                <Text style={styles.factName}>Type</Text>
+                <Text style={styles.factValue}>{emergencyTypeLabel(openReport.classified_as) || 'Not classified'}</Text>
+              </View>
+              <View style={styles.factRow}>
+                <Text style={styles.factName}>Status</Text>
+                <Text style={styles.factValue}>{EMERGENCY_STATUS_LABELS[openStatus]}</Text>
+              </View>
+              <View style={styles.factRow}>
+                <Text style={styles.factName}>Reported</Text>
+                <Text style={styles.factValue}>{reportedAt ? `${reportedAt} (Manila time)` : 'Time not recorded'}</Text>
+              </View>
+              <Text style={[styles.label, styles.labelSpaced]}>Details</Text>
+              <Text style={styles.detailsText}>{openReport.details || 'No details have been written for this report.'}</Text>
+
+              {savedNote ? (
+                <View style={styles.savedBox}>
+                  <Text style={styles.savedText}>{savedNote}</Text>
+                </View>
+              ) : null}
+
+              <View style={styles.panelActions}>
+                {outlineButton('Edit', () => show(openReport, 'edit'), 'Edit this report')}
+                {openReport.videoUrl
+                  ? outlineButton('Open video', () => Linking.openURL(openReport.videoUrl as string), 'Open the report video')
+                  : null}
+                <Pressable onPress={close} accessibilityRole="button" accessibilityLabel="Close report details" style={styles.plainBtn}>
+                  <Text style={styles.plainBtnText}>Close</Text>
+                </Pressable>
+              </View>
+            </>
+          )}
+
+          {saveError ? (
+            <View style={styles.saveErrorBox}>
+              <Text style={styles.saveErrorText}>{saveError}</Text>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
 
       <Text style={styles.listTitle}>All Reports</Text>
       {loadError ? (
@@ -250,7 +346,14 @@ export default function ReportsScreen() {
           <PrimaryButton title="Retry" onPress={fetchReports} style={styles.button} />
         </View>
       ) : null}
+    </View>
+  );
+
+  return (
+    <View style={styles.screen}>
       <FlatList
+        ref={listRef}
+        ListHeaderComponent={header}
         data={reports}
         keyExtractor={(item) => item.id.toString()}
         contentContainerStyle={styles.listContent}
@@ -260,9 +363,8 @@ export default function ReportsScreen() {
         renderItem={({ item }) => {
           const responderLabel = emergencyTypeLabel(item.classified_as);
           const status = item.status ?? 'pending';
-          const action = nextStatusAction(status);
           return (
-          <View style={[styles.reportCard, CardShadow]}>
+          <View style={[styles.reportCard, CardShadow, open?.id === item.id && { borderColor: theme.primary }]}>
             <View style={styles.reportHeaderRow}>
               <Text style={styles.reportTitle}>{item.title}</Text>
               <View style={[styles.statusBadge, status === 'resolved' && styles.statusBadgeResolved]}>
@@ -277,37 +379,11 @@ export default function ReportsScreen() {
             {item.details ? (
               <Text style={styles.reportContent}>{item.details}</Text>
             ) : null}
+            {/* No Accept here. A report is accepted on the Map, where doing so
+                is logged and the reporter is told. */}
             <View style={styles.actionRow}>
-              <Pressable
-                onPress={() => {
-                  setEditingId(item.id);
-                  setTitle(item.title);
-                  setContent(item.details);
-                }}
-                onPressIn={() => setPressedEditId(item.id)}
-                onPressOut={() => setPressedEditId(null)}
-                style={({ pressed }) => [
-                  styles.editBtn,
-                  { borderColor: theme.primary },
-                  pressed && [styles.editBtnPressed, { backgroundColor: theme.primary }],
-                ]}
-              >
-                <Text style={[
-                  styles.editBtnText,
-                  { color: theme.primary },
-                  pressedEditId === item.id && styles.editBtnTextPressed,
-                ]}>
-                  Edit
-                </Text>
-              </Pressable>
-              {action ? (
-                <Pressable
-                  onPress={() => handleStatusAction(item)}
-                  style={[styles.statusBtn, { backgroundColor: theme.primary }]}
-                >
-                  <Text style={styles.statusBtnText}>{action.label}</Text>
-                </Pressable>
-              ) : null}
+              {outlineButton('View', () => show(item, 'view'), `View ${item.title}`)}
+              {outlineButton('Edit', () => show(item, 'edit'), `Edit ${item.title}`)}
             </View>
           </View>
           );
@@ -343,6 +419,9 @@ const styles = StyleSheet.create({
     color: TEXT_PRIMARY,
     marginBottom: Spacing.sm,
   },
+  labelSpaced: {
+    marginTop: Spacing.sm,
+  },
   input: {
     borderWidth: 1,
     borderColor: BORDER,
@@ -357,6 +436,72 @@ const styles = StyleSheet.create({
   inputMultiline: {
     minHeight: 80,
     textAlignVertical: 'top',
+  },
+  readOnlyField: {
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    backgroundColor: OFF_WHITE,
+    marginBottom: Spacing.md,
+  },
+  readOnlyText: {
+    fontSize: FontSizes.body,
+    color: TEXT_SECONDARY,
+  },
+  factRow: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+    marginBottom: Spacing.xs,
+  },
+  factName: {
+    width: 72,
+    fontSize: FontSizes.sm,
+    color: TEXT_SECONDARY,
+  },
+  factValue: {
+    flex: 1,
+    fontSize: FontSizes.sm,
+    fontWeight: '600',
+    color: TEXT_PRIMARY,
+  },
+  detailsText: {
+    fontSize: FontSizes.sm,
+    color: TEXT_SECONDARY,
+    lineHeight: 20,
+  },
+  panelActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
+    marginTop: Spacing.md,
+  },
+  plainBtn: {
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: Radius.md,
+    backgroundColor: WHITE,
+  },
+  plainBtnText: {
+    fontSize: FontSizes.sm,
+    fontWeight: '600',
+    color: TEXT_SECONDARY,
+  },
+  savedBox: {
+    marginTop: Spacing.md,
+    padding: Spacing.sm,
+    backgroundColor: SUCCESS_BG,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: SUCCESS,
+  },
+  savedText: {
+    fontSize: FontSizes.sm,
+    color: SUCCESS,
   },
   button: {
     marginTop: Spacing.sm,
@@ -407,16 +552,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.sm,
   },
-  statusBtn: {
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-    borderRadius: Radius.md,
-  },
-  statusBtnText: {
-    fontSize: FontSizes.sm,
-    fontWeight: '600',
-    color: WHITE,
-  },
   emptyText: {
     fontSize: FontSizes.sm,
     color: TEXT_SECONDARY,
@@ -441,20 +576,16 @@ const styles = StyleSheet.create({
     color: TEXT_SECONDARY,
     marginBottom: Spacing.md,
   },
-  editBtn: {
+  outlineBtn: {
     alignSelf: 'flex-start',
     paddingVertical: Spacing.sm,
     paddingHorizontal: Spacing.md,
     borderWidth: 1,
     borderRadius: Radius.md,
   },
-  editBtnPressed: {},
-  editBtnText: {
+  outlineBtnText: {
     fontSize: FontSizes.sm,
     fontWeight: '600',
-  },
-  editBtnTextPressed: {
-    color: WHITE,
   },
   errorCard: {
     marginBottom: Spacing.lg,
