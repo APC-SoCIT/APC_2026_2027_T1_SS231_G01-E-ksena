@@ -65,16 +65,96 @@ def load_model():
 # Load model initially
 load_model()
 
+# =======================================================
+# 3. FACE DETECTION & BLURRING PIPELINE
+# =======================================================
+# Load OpenCV Haar Cascade for face detection
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+if face_cascade.empty():
+    print("[AI SERVICE] [WARNING] Haar Cascade failed to load from cv2.data.haarcascades", flush=True)
+
+def blur_faces_in_video(input_path, output_path):
+    """
+    Reads an input video, detects faces across every frame,
+    and applies a heavy Gaussian blur to privacy-protect individuals.
+    Returns (success: bool, total_faces_detected: int, frame_count: int).
+    """
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open video file {input_path}")
+
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 20.0
+    if fps <= 0 or np.isnan(fps):
+        fps = 20.0
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    if not writer.isOpened():
+        cap.release()
+        raise RuntimeError("Failed to initialize VideoWriter for blurred video")
+
+    total_faces = 0
+    frame_count = 0
+
+    try:
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame_count += 1
+
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            # Detect faces with tuned scaleFactor and minNeighbors
+            faces = face_cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.1,
+                minNeighbors=4,
+                minSize=(24, 24)
+            )
+
+            if len(faces) > 0:
+                total_faces += len(faces)
+                for (x, y, w, h) in faces:
+                    # Expand region slightly (15%) for full face and hairline coverage
+                    pad_w = int(w * 0.15)
+                    pad_h = int(h * 0.15)
+                    x1 = max(0, x - pad_w)
+                    y1 = max(0, y - pad_h)
+                    x2 = min(width, x + w + pad_w)
+                    y2 = min(height, y + h + pad_h)
+
+                    roi = frame[y1:y2, x1:x2]
+                    # Ensure kernel size is positive and odd
+                    kw = max(3, ((x2 - x1) // 3) * 2 + 1)
+                    kh = max(3, ((y2 - y1) // 3) * 2 + 1)
+                    blurred_roi = cv2.GaussianBlur(roi, (kw, kh), 30)
+                    frame[y1:y2, x1:x2] = blurred_roi
+
+            writer.write(frame)
+    finally:
+        cap.release()
+        writer.release()
+
+    if frame_count == 0 or not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+        raise RuntimeError("Face blur processing generated an invalid or empty video file")
+
+    return True, total_faces, frame_count
+
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({"status": "ok", "model_loaded": model is not None})
+    return jsonify({
+        "status": "ok",
+        "model_loaded": model is not None,
+        "face_cascade_loaded": not face_cascade.empty()
+    })
 
+@app.route('/process-video', methods=['POST'])
 @app.route('/analyze-video', methods=['POST'])
 def analyze_video():
     if not model:
         load_model() # Try loading again
-        if not model:
-            return jsonify({"error": f"AI model not loaded. Please make sure {WEIGHTS_PATH} is in the backend folder."}), 500
 
     data = request.json or {}
     video_url = data.get('video_url')
@@ -82,75 +162,104 @@ def analyze_video():
     if not video_url:
         return jsonify({"error": "video_url is required"}), 400
         
-    print(f"[AI SERVICE] Received request to analyze video: {video_url}", flush=True)
+    print(f"[AI SERVICE] Received request to process/analyze video: {video_url}", flush=True)
     
+    video_path = None
+    blurred_path = None
     try:
-        video_path = None
         if video_url.startswith("http"):
             print("[AI SERVICE] Downloading video...", flush=True)
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
-                response = requests.get(video_url, timeout=30)
+                response = requests.get(video_url, timeout=45)
+                if response.status_code != 200:
+                    return jsonify({"error": f"Failed to download video: HTTP {response.status_code}"}), 400
                 tmp_file.write(response.content)
                 video_path = tmp_file.name
             print(f"[AI SERVICE] Downloaded video to {video_path} ({os.path.getsize(video_path)} bytes)", flush=True)
         else:
             print("[AI SERVICE] Not a valid HTTP link. Simulating fallback.", flush=True)
                 
+        detected_service = 'medical'
+        conf_val = 0.85
+        total_faces_blurred = 0
+
         if video_path and os.path.exists(video_path):
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
-                print("[AI SERVICE] Could not open video file with OpenCV", flush=True)
-                return jsonify({"error": "Could not read downloaded video"}), 500
+            # 1. Run Face Detection & Gaussian Blur Processing
+            print("[AI SERVICE] Applying face-blurring pipeline...", flush=True)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_blur:
+                blurred_path = tmp_blur.name
 
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            print(f"[AI SERVICE] Total frames in video: {total_frames}", flush=True)
+            blur_ok, total_faces_blurred, frame_count = blur_faces_in_video(video_path, blurred_path)
+            print(f"[AI SERVICE] Blur complete: {frame_count} frames processed, {total_faces_blurred} face detections blurred.", flush=True)
 
-            step = max(1, total_frames // NUM_FRAMES)
-            frames = []
-            curr = 0
-            while cap.isOpened() and len(frames) < NUM_FRAMES:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                if curr % step == 0:
-                    frame_rgb = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), IMG_SIZE)
-                    frames.append(frame_rgb)
-                curr += 1
-            cap.release()
+            # 2. Run Classification on the Blurred Video
+            if model:
+                cap = cv2.VideoCapture(blurred_path)
+                if cap.isOpened():
+                    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    step = max(1, total_frames // NUM_FRAMES)
+                    frames = []
+                    curr = 0
+                    while cap.isOpened() and len(frames) < NUM_FRAMES:
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                        if curr % step == 0:
+                            frame_rgb = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), IMG_SIZE)
+                            frames.append(frame_rgb)
+                        curr += 1
+                    cap.release()
 
-            while len(frames) < NUM_FRAMES:
-                frames.append(np.zeros((*IMG_SIZE, 3), dtype=np.uint8))
+                    while len(frames) < NUM_FRAMES:
+                        frames.append(np.zeros((*IMG_SIZE, 3), dtype=np.uint8))
 
-            input_tensor = torch.from_numpy(np.array(frames)).float() / 255.0
-            input_tensor = input_tensor.permute(3, 0, 1, 2).unsqueeze(0).to(device)
+                    input_tensor = torch.from_numpy(np.array(frames)).float() / 255.0
+                    input_tensor = input_tensor.permute(3, 0, 1, 2).unsqueeze(0).to(device)
 
-            with torch.no_grad():
-                outputs = model(input_tensor)
-                probabilities = F.softmax(outputs, dim=1)
-                confidence, predicted = torch.max(probabilities, 1)
+                    with torch.no_grad():
+                        outputs = model(input_tensor)
+                        probabilities = F.softmax(outputs, dim=1)
+                        confidence, predicted = torch.max(probabilities, 1)
 
-            conf_val = float(confidence.item())
-            pred_idx = int(predicted.item())
-            detected_service = LABEL_NAMES[pred_idx]
-            
-            try:
-                os.unlink(video_path)
-            except Exception as e:
-                pass
-        else:
-            detected_service = 'medical'
-            conf_val = 0.95
+                    conf_val = float(confidence.item())
+                    pred_idx = int(predicted.item())
+                    detected_service = LABEL_NAMES[pred_idx]
+            else:
+                detected_service = 'medical'
+                conf_val = 0.85
 
         print(f"[AI SERVICE] Classification Complete -> {detected_service} (Confidence: {conf_val:.2f})", flush=True)
+
+        # 3. Read blurred video binary for response
+        blurred_video_b64 = None
+        if blurred_path and os.path.exists(blurred_path):
+            import base64
+            with open(blurred_path, 'rb') as f:
+                blurred_video_b64 = base64.b64encode(f.read()).decode('utf-8')
+
         return jsonify({
             "success": True,
             "detected_service_type": detected_service,
-            "confidence_score": conf_val
+            "confidence_score": conf_val,
+            "faces_blurred": total_faces_blurred,
+            "has_blurred_video": blurred_video_b64 is not None,
+            "blurred_video_base64": blurred_video_b64
         })
         
     except Exception as e:
-        print(f"[AI SERVICE] Error during classification: {e}")
-        return jsonify({"error": str(e)}), 500
+        print(f"[AI SERVICE] Error during processing/blurring: {e}", flush=True)
+        return jsonify({"error": str(e), "success": False}), 500
+    finally:
+        if video_path and os.path.exists(video_path):
+            try:
+                os.unlink(video_path)
+            except Exception:
+                pass
+        if blurred_path and os.path.exists(blurred_path):
+            try:
+                os.unlink(blurred_path)
+            except Exception:
+                pass
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

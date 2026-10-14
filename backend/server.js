@@ -275,20 +275,23 @@ app.post('/api/report-incident', async (req, res) => {
 
     console.log(`[REPORT] Incident created: ${incident.incident_id}`);
 
-    // If citizen explicitly selected service type (fire/police/medical), use it directly
+    // ============================================
+    // AI Classification & Face-Blurring Pipeline
+    // ============================================
     const validManualService = ['medical', 'police', 'fire'].includes(String(service_type).toLowerCase())
       ? String(service_type).toLowerCase()
       : null;
 
     let detectedService = validManualService || 'medical';
     let confidence = validManualService ? 1.0 : 0.85;
+    let finalVideoUrl = video_url || 'mock://video';
 
-    // Call Python AI Microservice only if no manual service type was specified and video is provided
-    if (!validManualService) {
+    // Call Python AI Microservice whenever a valid video URL is provided to apply face blurring and emergency classification
+    if (video_url && typeof video_url === 'string' && video_url.startsWith('http')) {
       try {
-        console.log(`[AI] Sending video to AI Microservice for incident ${incident.incident_id}...`);
+        console.log(`[AI-BLUR] Sending video to AI Microservice for face-blurring and classification (incident: ${incident.incident_id})...`);
         const aiUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5000';
-        const aiResponse = await fetch(`${aiUrl}/analyze-video`, {
+        const aiResponse = await fetch(`${aiUrl}/process-video`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ video_url: video_url })
@@ -297,17 +300,66 @@ app.post('/api/report-incident', async (req, res) => {
         if (aiResponse.ok) {
           const aiResult = await aiResponse.json();
           if (aiResult.success) {
-            detectedService = aiResult.detected_service_type;
-            confidence = aiResult.confidence_score;
-            console.log(`[AI] AI classified video as: ${detectedService} (Confidence: ${confidence})`);
+            if (!validManualService && aiResult.detected_service_type) {
+              detectedService = aiResult.detected_service_type;
+              confidence = aiResult.confidence_score || 0.85;
+              console.log(`[AI] AI classified video as: ${detectedService} (Confidence: ${confidence})`);
+            }
+            console.log(`[AI-BLUR] Face blurring succeeded. Detected faces blurred: ${aiResult.faces_blurred ?? 0}`);
+
+            // Upload the blurred video binary to Supabase storage
+            if (aiResult.has_blurred_video && aiResult.blurred_video_base64) {
+              const blurredBuffer = Buffer.from(aiResult.blurred_video_base64, 'base64');
+              const blurredFileName = `blurred_${Date.now()}_${incident.incident_id.slice(0, 8)}.mp4`;
+
+              const { data: uploadData, error: uploadErr } = await supabase.storage
+                .from('incident-videos')
+                .upload(blurredFileName, blurredBuffer, {
+                  contentType: 'video/mp4',
+                  upsert: true
+                });
+
+              if (uploadErr) {
+                console.error('[AI-BLUR] Failed to upload blurred video to storage:', uploadErr);
+                return res.status(500).json({
+                  success: false,
+                  error: 'Face-blurring storage failed. Privacy policy prevents saving unblurred video.'
+                });
+              }
+
+              const { data: urlData } = supabase.storage.from('incident-videos').getPublicUrl(blurredFileName);
+              if (urlData?.publicUrl) {
+                finalVideoUrl = urlData.publicUrl;
+                console.log(`[AI-BLUR] Blurred video published: ${finalVideoUrl}`);
+
+                // Update incident record with the blurred video URL
+                await supabase
+                  .from('incidents')
+                  .update({ video_url: finalVideoUrl })
+                  .eq('incident_id', incident.incident_id);
+              }
+            }
           } else {
-            console.log(`[AI] AI Service returned error: ${aiResult.error}. Using fallback.`);
+            console.error(`[AI-BLUR] AI service reported failure: ${aiResult.error}`);
+            return res.status(500).json({
+              success: false,
+              error: `Video face-blurring failed: ${aiResult.error || 'Processing error'}`
+            });
           }
         } else {
-          console.log(`[AI] AI Service unreachable (Status: ${aiResponse.status}). Using fallback classification.`);
+          const errText = await aiResponse.text();
+          console.error(`[AI-BLUR] AI service returned HTTP ${aiResponse.status}: ${errText}`);
+          return res.status(502).json({
+            success: false,
+            error: 'AI face-blurring service is currently unavailable. Incident cannot be saved with unblurred video.'
+          });
         }
       } catch (aiMicroErr) {
-        console.warn('[AI] Error in microservice pipeline:', aiMicroErr);
+        console.error('[AI-BLUR] Exception communicating with AI Microservice:', aiMicroErr);
+        return res.status(500).json({
+          success: false,
+          error: `Face-blurring processing error: ${aiMicroErr.message}`
+        });
       }
     }
 
@@ -450,7 +502,7 @@ app.post('/api/report-incident', async (req, res) => {
             classified_as: detectedService,
             report_location_lat: lat,
             report_location_lng: lng,
-            video_path: video_url || 'mock://video',
+            video_path: finalVideoUrl || 'mock://video',
             bucket_id: 'incident-videos',
             is_processed: true,
             status: 'pending',

@@ -255,9 +255,9 @@ const VideoCameraScreen: React.FC = () => {
           <View style={styles.aiOverlay}>
             <View style={styles.aiAlert}>
               <ActivityIndicator size="large" color="#ffffff" />
-              <Text style={styles.aiAlertText}>Classifying...</Text>
+              <Text style={styles.aiAlertText}>Protecting Privacy & Classifying...</Text>
               <Text style={styles.aiSubText}>
-                AI is verifying the emergency
+                Blurring faces and classifying emergency
               </Text>
             </View>
           </View>
