@@ -9,9 +9,21 @@ import { useAuth } from '../../context/AuthContext';
 
 const configuration = {
   iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
-  ]
+    {
+      urls: 'stun:stun.l.google.com:19302'
+    },
+    {
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp',
+        'turns:openrelay.metered.ca:443?transport=tcp'
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }
+  ],
+  iceCandidatePoolSize: 10
 };
 
 export default function CallScreen() {
@@ -45,7 +57,7 @@ export default function CallScreen() {
       
       setLocalStream(stream);
 
-      // 2. Initialize Peer Connection
+      // 2. Initialize Peer Connection with STUN and TURN
       pc.current = new RTCPeerConnection(configuration);
 
       // Add local tracks to PeerConnection
@@ -55,8 +67,28 @@ export default function CallScreen() {
 
       // Handle receiving remote stream
       pc.current.ontrack = (event: any) => {
+        console.log('[WebRTC] Received remote stream track:', event.track?.kind);
         if (event.streams && event.streams[0]) {
           setRemoteStream(event.streams[0]);
+          setIsConnecting(false);
+        }
+      };
+
+      // Connection State monitoring
+      (pc.current as any).onconnectionstatechange = () => {
+        const state = (pc.current as any)?.connectionState;
+        console.log('[WebRTC] Connection state changed:', state);
+        if (state === 'connected') {
+          setIsConnecting(false);
+        } else if (state === 'failed' || state === 'closed') {
+          console.warn('[WebRTC] Connection state:', state);
+        }
+      };
+
+      (pc.current as any).oniceconnectionstatechange = () => {
+        const iceState = (pc.current as any)?.iceConnectionState;
+        console.log('[WebRTC] ICE connection state changed:', iceState);
+        if (iceState === 'connected' || iceState === 'completed') {
           setIsConnecting(false);
         }
       };
@@ -64,31 +96,37 @@ export default function CallScreen() {
       // Handle sending ICE candidates to the Web App
       pc.current.onicecandidate = async (event: any) => {
         if (event.candidate && channelRef.current) {
+          const candidateData = event.candidate.toJSON ? event.candidate.toJSON() : event.candidate;
+          console.log('[WebRTC] Sending ICE candidate:', candidateData.candidate?.slice(0, 50));
           channelRef.current.send({
             type: 'broadcast',
             event: 'webrtc-signaling',
             payload: {
               type: 'candidate',
-              candidate: event.candidate.toJSON(),
+              candidate: candidateData,
               sender: 'mobile'
             }
           });
         }
       };
 
-      // 3. Listen for answers and ICE candidates from the Web App via Broadcast
-      channelRef.current = supabase.channel(`webrtc-incident-${incidentId}`)
+      // 3. Listen for answers and ICE candidates from the Web App via Broadcast channel
+      const signalingChannelName = `webrtc-incident-${incidentId}`;
+      console.log(`[WebRTC] Subscribing to signaling channel: ${signalingChannelName}`);
+      channelRef.current = supabase.channel(signalingChannelName)
         .on(
           'broadcast',
           { event: 'webrtc-signaling' },
           async (payload) => {
             const signal = payload.payload;
             
-              // Only process signals from the responder
+            // Only process signals from the responder
             if (signal.sender === 'responder') {
+              console.log('[WebRTC] Received signal from responder:', signal.type);
               
               // Handle Ready (Web App joined late and missed the initial offer)
               if (signal.type === 'ready' && pc.current) {
+                console.log('[WebRTC] Responder is ready, sending fresh offer...');
                 const offer = await pc.current.createOffer({ iceRestart: true });
                 await pc.current.setLocalDescription(offer);
                 channelRef.current?.send({
@@ -100,24 +138,32 @@ export default function CallScreen() {
 
               // Handle Answer
               if (signal.type === 'answer' && pc.current) {
+                console.log('[WebRTC] Setting remote description from responder answer');
                 const answerDesc = new RTCSessionDescription(signal.answer);
                 await pc.current.setRemoteDescription(answerDesc);
               }
               
               // Handle ICE Candidates
-              if (signal.type === 'candidate' && pc.current) {
-                const candidate = new RTCIceCandidate(signal.candidate);
-                await pc.current.addIceCandidate(candidate);
+              if (signal.type === 'candidate' && pc.current && signal.candidate) {
+                try {
+                  console.log('[WebRTC] Adding remote ICE candidate');
+                  const candidate = new RTCIceCandidate(signal.candidate);
+                  await pc.current.addIceCandidate(candidate);
+                } catch (candidateErr) {
+                  console.warn('[WebRTC] Error adding ICE candidate:', candidateErr);
+                }
               }
             }
           }
         )
         .subscribe(async (status) => {
+          console.log('[WebRTC] Supabase signaling subscription status:', status);
           if (status === 'SUBSCRIBED') {
             // 4. Create and send the Offer to the Web App ONLY AFTER subscribed
             const offer = await pc.current!.createOffer({});
             await pc.current!.setLocalDescription(offer);
 
+            console.log('[WebRTC] Broadcast initial offer to responder');
             channelRef.current.send({
               type: 'broadcast',
               event: 'webrtc-signaling',
