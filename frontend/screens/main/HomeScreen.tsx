@@ -37,12 +37,16 @@ const HomeScreen: React.FC = () => {
   const [routeCoordinates, setRouteCoordinates] = useState<Array<[number, number]> | null>(null);
   const [distance, setDistance] = useState(0);
   const [eta, setETA] = useState('');
+  const mapRef = useRef<MapView>(null);
   const [mapCenter, setMapCenter] = useState<[number, number]>([
     state.location.longitude || 121.0215128,
     state.location.latitude || 14.5310248,
   ]);
 
   useEffect(() => {
+    let locationSubscription: Location.LocationSubscription | null = null;
+    let isInitialCenter = true;
+
     (async () => {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
@@ -51,23 +55,56 @@ const HomeScreen: React.FC = () => {
           return;
         }
 
+        // Get accurate initial position
         const location = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
+          accuracy: Location.Accuracy.Highest,
         });
 
         const { latitude, longitude } = location.coords;
-        const addressResponse = await Location.reverseGeocodeAsync({ latitude, longitude });
-        const addressEntry = addressResponse[0];
-        const address = addressEntry
-          ? `${addressEntry.street || ''} ${addressEntry.city || ''} ${addressEntry.region || ''}`.trim()
-          : 'Unknown Location';
+        Location.reverseGeocodeAsync({ latitude, longitude }).then((addressResponse) => {
+          const addressEntry = addressResponse[0];
+          const address = addressEntry
+            ? `${addressEntry.street || ''} ${addressEntry.city || ''} ${addressEntry.region || ''}`.trim()
+            : 'Unknown Location';
+          setLocation(latitude, longitude, address);
+        }).catch(() => {});
 
-        setLocation(latitude, longitude, address);
+        setLocation(latitude, longitude);
         setMapCenter([longitude, latitude]);
+
+        if (mapRef.current) {
+          mapRef.current.animateToRegion({
+            latitude,
+            longitude,
+            latitudeDelta: 0.01,
+            longitudeDelta: 0.01,
+          }, 800);
+        }
+
+        // Continually track location changes with high accuracy
+        locationSubscription = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.High,
+            timeInterval: 3000,
+            distanceInterval: 5,
+          },
+          (newLocation) => {
+            const { latitude: newLat, longitude: newLng } = newLocation.coords;
+            setLocation(newLat, newLng);
+            if (isInitialCenter) {
+              isInitialCenter = false;
+              setMapCenter([newLng, newLat]);
+            }
+          }
+        );
       } catch (error) {
         console.error('Location Error:', error);
       }
     })();
+
+    return () => {
+      locationSubscription?.remove();
+    };
   }, []);
 
   // Fetch directions when responder data is set
@@ -214,21 +251,29 @@ const HomeScreen: React.FC = () => {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <MapView
+        ref={mapRef}
         style={styles.map}
         provider="google"
         showsUserLocation={true}
         showsMyLocationButton={true}
-        region={{
+        initialRegion={{
           latitude: mapCenter[1],
           longitude: mapCenter[0],
-          latitudeDelta: 0.05,
-          longitudeDelta: 0.05,
+          latitudeDelta: 0.015,
+          longitudeDelta: 0.015,
         }}
       >
-        {/* User location marker */}
-        <Marker coordinate={{ latitude: userCoordinate[1], longitude: userCoordinate[0] }}>
-          <View style={styles.userMarker}>
-            <View style={styles.markerDot} />
+        {/* User location custom pin */}
+        <Marker
+          coordinate={{ latitude: userCoordinate[1], longitude: userCoordinate[0] }}
+          anchor={{ x: 0.5, y: 0.5 }}
+          flat={true}
+          title="Your Location"
+        >
+          <View style={styles.userMarkerPulse}>
+            <View style={styles.userMarker}>
+              <View style={styles.markerDot} />
+            </View>
           </View>
         </Marker>
 
@@ -240,6 +285,8 @@ const HomeScreen: React.FC = () => {
                 latitude: responderData.responderLocation.latitude,
                 longitude: responderData.responderLocation.longitude,
               }}
+              anchor={{ x: 0.5, y: 0.5 }}
+              title="Responder Unit"
             >
               <View style={styles.responderMarker}>
                 <View style={styles.markerDot} />
@@ -252,6 +299,8 @@ const HomeScreen: React.FC = () => {
                   latitude: responderData.responderBase.latitude,
                   longitude: responderData.responderBase.longitude,
                 }}
+                anchor={{ x: 0.5, y: 0.5 }}
+                title={responderData.responderBase.name || 'Station'}
               >
                 <View style={styles.baseMarker}>
                   <View style={styles.markerDot} />
@@ -349,10 +398,41 @@ const HomeScreen: React.FC = () => {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#ffffff' },
   map: { flex: 1 },
-  userMarker: { backgroundColor: '#3b82f6', borderRadius: 8, padding: 4 },
-  responderMarker: { backgroundColor: '#ef4444', borderRadius: 8, padding: 4 },
-  baseMarker: { backgroundColor: '#fbbf24', borderRadius: 8, padding: 4 },
-  markerDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#ffffff' },
+  userMarkerPulse: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(59, 130, 246, 0.25)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  userMarker: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#2563eb',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#ffffff',
+  },
+  responderMarker: {
+    backgroundColor: '#ef4444',
+    borderRadius: 12,
+    padding: 6,
+    borderWidth: 2,
+    borderColor: '#ffffff',
+    elevation: 4,
+  },
+  baseMarker: {
+    backgroundColor: '#fbbf24',
+    borderRadius: 12,
+    padding: 6,
+    borderWidth: 2,
+    borderColor: '#ffffff',
+    elevation: 4,
+  },
+  markerDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#ffffff' },
   controlsOverlay: {
     position: 'absolute', bottom: 0, left: 0, right: 0,
     paddingHorizontal: 16, paddingBottom: 20,
