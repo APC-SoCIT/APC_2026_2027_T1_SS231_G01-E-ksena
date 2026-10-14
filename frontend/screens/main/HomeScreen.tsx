@@ -26,6 +26,7 @@ interface ResponderData {
   dispatcherName: string;
   dispatcherPhone?: string | null;
   serviceType?: string;
+  status?: string;
 }
 
 const HomeScreen: React.FC = () => {
@@ -166,10 +167,9 @@ const HomeScreen: React.FC = () => {
     return () => unsubscribe?.();
   }, [navigation]);
 
-  // Listen for dispatch 'resolved' status from the web responder clicking "Done"
+  // Listen for dispatch live updates (status, current_lat, current_lng)
   useEffect(() => {
     if (!responderData?.incidentId) {
-      // Clean up any old channel if incident is cleared
       if (dispatchChannelRef.current) {
         supabase.removeChannel(dispatchChannelRef.current);
         dispatchChannelRef.current = null;
@@ -179,9 +179,39 @@ const HomeScreen: React.FC = () => {
 
     const incidentId = responderData.incidentId;
 
-    // Subscribe to changes on the dispatch table for this specific incident
+    // 1. Initial read: check existing row when tracking starts
+    (async () => {
+      try {
+        const { data: dispatchRow, error } = await supabase
+          .from('dispatch')
+          .select('status, current_lat, current_lng, location_updated_at')
+          .eq('incident_id', incidentId)
+          .maybeSingle();
+
+        if (dispatchRow && !error) {
+          console.log('[DISPATCH] Initial row loaded:', dispatchRow);
+          setResponderData((prev) => {
+            if (!prev) return null;
+            const updatedLocation =
+              dispatchRow.current_lat && dispatchRow.current_lng
+                ? { latitude: parseFloat(dispatchRow.current_lat), longitude: parseFloat(dispatchRow.current_lng) }
+                : prev.responderLocation;
+
+            return {
+              ...prev,
+              status: dispatchRow.status || prev.status,
+              responderLocation: updatedLocation,
+            };
+          });
+        }
+      } catch (err) {
+        console.warn('[DISPATCH] Error reading initial dispatch row:', err);
+      }
+    })();
+
+    // 2. Realtime listener: update live marker position, route, and status
     const channel = supabase
-      .channel(`dispatch-resolved-${incidentId}`)
+      .channel(`dispatch-live-${incidentId}`)
       .on(
         'postgres_changes',
         {
@@ -191,7 +221,13 @@ const HomeScreen: React.FC = () => {
           filter: `incident_id=eq.${incidentId}`,
         },
         (payload) => {
-          if (payload.new?.status === 'resolved') {
+          const newRecord = payload.new;
+          console.log('[DISPATCH] Realtime update received:', newRecord);
+
+          if (!newRecord) return;
+
+          // Check for completed / resolved status
+          if (newRecord.status === 'resolved') {
             Alert.alert(
               '✅ Dispatch Has Arrived!',
               'The emergency responder has arrived at your location and marked the incident as resolved.',
@@ -199,7 +235,6 @@ const HomeScreen: React.FC = () => {
                 {
                   text: 'OK',
                   onPress: () => {
-                    // Clean up and reset to normal home screen
                     if (dispatchChannelRef.current) {
                       supabase.removeChannel(dispatchChannelRef.current);
                       dispatchChannelRef.current = null;
@@ -209,7 +244,23 @@ const HomeScreen: React.FC = () => {
                 },
               ]
             );
+            return;
           }
+
+          // Move responder marker to live current_lat/current_lng and update status
+          setResponderData((prev) => {
+            if (!prev) return null;
+            const hasNewCoordinates = newRecord.current_lat && newRecord.current_lng;
+            const updatedLocation = hasNewCoordinates
+              ? { latitude: parseFloat(newRecord.current_lat), longitude: parseFloat(newRecord.current_lng) }
+              : prev.responderLocation;
+
+            return {
+              ...prev,
+              status: newRecord.status || prev.status,
+              responderLocation: updatedLocation,
+            };
+          });
         }
       )
       .subscribe();
@@ -349,6 +400,31 @@ const HomeScreen: React.FC = () => {
                   <Text style={styles.serviceType}>{responderData.serviceType}</Text>
                 )}
               </View>
+              {responderData.status && (
+                <View
+                  style={[
+                    styles.statusBadge,
+                    responderData.status === 'arrived'
+                      ? styles.statusBadgeArrived
+                      : styles.statusBadgeEnRoute,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.statusBadgeText,
+                      responderData.status === 'arrived'
+                        ? styles.statusBadgeTextArrived
+                        : styles.statusBadgeTextEnRoute,
+                    ]}
+                  >
+                    {responderData.status === 'arrived'
+                      ? 'Responder has arrived'
+                      : responderData.status === 'en_route'
+                      ? 'Responder on the way'
+                      : responderData.status.toUpperCase()}
+                  </Text>
+                </View>
+              )}
             </View>
 
             <View style={styles.distanceRow}>
@@ -479,6 +555,32 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#dc2626', width: '100%', gap: 8
   },
   offlineSmsText: { color: '#dc2626', fontSize: 14, fontWeight: 'bold' },
+  statusBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+  },
+  statusBadgeEnRoute: {
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#3b82f6',
+  },
+  statusBadgeArrived: {
+    backgroundColor: '#ecfdf5',
+    borderWidth: 1,
+    borderColor: '#10b981',
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  statusBadgeTextEnRoute: {
+    color: '#1d4ed8',
+  },
+  statusBadgeTextArrived: {
+    color: '#047857',
+  },
 });
 
 export default HomeScreen;
