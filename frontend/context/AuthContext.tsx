@@ -157,7 +157,7 @@ interface AuthContextType {
   state: AppState;
   dispatch: React.Dispatch<AppAction>;
   requestOtp: (email: string) => Promise<void>;
-  verifyOtp: (email: string, token: string) => Promise<void>;
+  verifyOtp: (email: string, token: string, fullName?: string) => Promise<void>;
   logout: () => void;
   clearError: () => void;
   setLocation: (latitude: number, longitude: number, address?: string) => void;
@@ -204,19 +204,38 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     initAuth();
 
     // Listen to Supabase auth events (e.g. token refreshed, logged out)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!isMounted) return;
       console.log('[AuthContext] onAuthStateChange event:', event);
       if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && session?.user) {
         const u = session.user;
+        let resolvedName = (u.user_metadata as any)?.name || '';
+        let resolvedPhone = (u.user_metadata as any)?.phone;
+
+        if (!resolvedName || !resolvedPhone) {
+          try {
+            const { data: dbUser } = await supabase
+              .from('users')
+              .select('full_name, user_phone_number')
+              .eq('email', u.email || '')
+              .maybeSingle();
+            if (dbUser) {
+              if (!resolvedName && dbUser.full_name) resolvedName = dbUser.full_name;
+              if (!resolvedPhone && dbUser.user_phone_number) resolvedPhone = dbUser.user_phone_number;
+            }
+          } catch (e) {
+            // silent catch
+          }
+        }
+
         dispatch({
           type: 'LOGIN_SUCCESS',
           payload: {
             user: {
               id: u.id,
-              name: (u.user_metadata as any)?.name || (u.email as string),
+              name: resolvedName,
               email: (u.email as string) || '',
-              phone: (u.user_metadata as any)?.phone,
+              phone: resolvedPhone,
               dateOfBirth: (u.user_metadata as any)?.dateOfBirth,
             },
             token: session.access_token,
@@ -267,10 +286,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
-  const verifyOtp = async (email: string, token: string) => {
+  const verifyOtp = async (email: string, token: string, fullName?: string) => {
     dispatch({ type: 'LOGIN_START' });
     try {
-      const result = await verifyEmailOtp(email, token);
+      const result = await verifyEmailOtp(email, token, fullName);
       dispatch({
         type: 'LOGIN_SUCCESS',
         payload: { user: result.user, token: result.token },

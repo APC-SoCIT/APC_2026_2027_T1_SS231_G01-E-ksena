@@ -44,14 +44,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const MOCK_SESSION_KEY = '@eksena_mock_session';
 
-export const verifyEmailOtp = async (email: string, token: string): Promise<LoginResponse> => {
+export const verifyEmailOtp = async (email: string, token: string, fullName?: string): Promise<LoginResponse> => {
   // Developer Bypass for testing
   if (email.toLowerCase() === 'test@test.com' && token === '000000') {
     const mockResponse: LoginResponse = {
       success: true,
       user: {
         id: 'developer-test-uuid',
-        name: 'Developer Test',
+        name: fullName?.trim() || 'Developer Test',
         email: 'test@test.com',
         phone: '+639123456789',
       },
@@ -74,15 +74,44 @@ export const verifyEmailOtp = async (email: string, token: string): Promise<Logi
   // Clear any existing mock session if real session succeeded
   await AsyncStorage.removeItem(MOCK_SESSION_KEY).catch(() => {});
 
-  const u = data.user;
+  let u = data.user;
+
+  // If user provided a full name, update auth metadata and users table
+  if (fullName && fullName.trim()) {
+    try {
+      const { data: updatedAuth } = await supabase.auth.updateUser({
+        data: { name: fullName.trim() }
+      });
+      if (updatedAuth?.user) {
+        u = updatedAuth.user;
+      }
+      await supabase.from('users').update({ full_name: fullName.trim() }).eq('email', email);
+    } catch (metaErr) {
+      console.warn('[AuthService] Could not update fullName metadata:', metaErr);
+    }
+  }
+
+  let resolvedName = (u.user_metadata as any)?.name || (fullName?.trim() ? fullName.trim() : '');
+  let resolvedPhone = (u.user_metadata as any)?.phone;
+
+  // Sync from users table if missing in auth metadata
+  try {
+    const { data: dbUser } = await supabase.from('users').select('full_name, user_phone_number').eq('email', email).maybeSingle();
+    if (dbUser) {
+      if (!resolvedName && dbUser.full_name) resolvedName = dbUser.full_name;
+      if (!resolvedPhone && dbUser.user_phone_number) resolvedPhone = dbUser.user_phone_number;
+    }
+  } catch (dbErr) {
+    console.warn('[AuthService] Could not query users table:', dbErr);
+  }
 
   return {
     success: true,
     user: {
       id: u.id,
-      name: (u.user_metadata as any)?.name || (u.email as string),
+      name: resolvedName || '',
       email: (u.email as string) || email,
-      phone: (u.user_metadata as any)?.phone,
+      phone: resolvedPhone,
       dateOfBirth: (u.user_metadata as any)?.dateOfBirth,
     },
     token: data.session.access_token,
@@ -102,13 +131,32 @@ export const getCurrentSession = async (): Promise<LoginResponse | null> => {
     const { data: { session }, error } = await supabase.auth.getSession();
     if (!error && session && session.user) {
       const u = session.user;
+      let resolvedName = (u.user_metadata as any)?.name || '';
+      let resolvedPhone = (u.user_metadata as any)?.phone;
+
+      // Sync name and phone from public.users table if missing
+      try {
+        const { data: dbUser } = await supabase
+          .from('users')
+          .select('full_name, user_phone_number')
+          .eq('email', u.email || '')
+          .maybeSingle();
+
+        if (dbUser) {
+          if (!resolvedName && dbUser.full_name) resolvedName = dbUser.full_name;
+          if (!resolvedPhone && dbUser.user_phone_number) resolvedPhone = dbUser.user_phone_number;
+        }
+      } catch (dbErr) {
+        console.warn('[AuthService] Error querying users table in getCurrentSession:', dbErr);
+      }
+
       return {
         success: true,
         user: {
           id: u.id,
-          name: (u.user_metadata as any)?.name || (u.email as string),
+          name: resolvedName,
           email: (u.email as string) || '',
-          phone: (u.user_metadata as any)?.phone,
+          phone: resolvedPhone,
           dateOfBirth: (u.user_metadata as any)?.dateOfBirth,
         },
         token: session.access_token,

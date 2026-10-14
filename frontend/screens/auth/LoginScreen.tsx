@@ -1,6 +1,6 @@
 import { useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
-import { CheckSquare, Lock, Mail, Shield, Square } from 'lucide-react-native';
+import { CheckSquare, Lock, Mail, Shield, Square, User } from 'lucide-react-native';
 import React, { useState } from 'react';
 import {
   Alert,
@@ -23,6 +23,7 @@ const LoginScreen: React.FC = () => {
   const navigation = useNavigation<LoginScreenNavigationProp>();
   const { requestOtp, verifyOtp, state, clearError } = useAuth();
   
+  const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [step, setStep] = useState<'email' | 'otp'>('email');
@@ -79,7 +80,7 @@ const LoginScreen: React.FC = () => {
     clearError();
 
     try {
-      await verifyOtp(email.trim(), otpCode.trim());
+      await verifyOtp(email.trim(), otpCode.trim(), fullName.trim() || undefined);
       // Navigation handled by AuthContext state change automatically
     } catch (error) {
       Alert.alert('Verification Failed', error instanceof Error ? error.message : 'Invalid code');
@@ -104,6 +105,22 @@ const LoginScreen: React.FC = () => {
           </View>
 
           <View style={styles.form}>
+            {/* Full Name Input */}
+            <View style={styles.inputContainer}>
+              <View style={styles.inputWrapper}>
+                <User size={20} color="#6b7280" style={styles.inputIcon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Full Name (e.g. Juan Dela Cruz)"
+                  placeholderTextColor="#9ca3af"
+                  value={fullName}
+                  onChangeText={setFullName}
+                  autoCapitalize="words"
+                  autoCorrect={false}
+                />
+              </View>
+            </View>
+
             <View style={styles.inputContainer}>
               <View style={styles.inputWrapper}>
                 <Mail size={20} color="#6b7280" style={styles.inputIcon} />

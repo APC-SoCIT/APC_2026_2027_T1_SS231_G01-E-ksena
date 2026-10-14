@@ -15,7 +15,7 @@ import { useAuth } from '../../context/AuthContext';
 
 const ProfileScreen: React.FC = () => {
   const navigation = useNavigation();
-  const { state, logout } = useAuth();
+  const { state, dispatch, logout } = useAuth();
   const { user } = state.auth;
 
   const handleLogout = () => {
@@ -40,6 +40,14 @@ const ProfileScreen: React.FC = () => {
   const [editPhone, setEditPhone] = useState(user?.phone || '');
   const [isSaving, setIsSaving] = useState(false);
 
+  // Sync inputs if user state changes
+  React.useEffect(() => {
+    if (user) {
+      setEditName(user.name || '');
+      setEditPhone(user.phone || '');
+    }
+  }, [user]);
+
   const handleEditProfile = () => {
     setIsEditing(true);
   };
@@ -49,20 +57,46 @@ const ProfileScreen: React.FC = () => {
     setIsSaving(true);
     try {
       const { supabase } = await import('../../services/supabaseClient');
-      const { error } = await supabase
+      
+      // 1. Update Supabase Auth user_metadata so it persists across app restarts/reloads
+      const { data: authData, error: authError } = await supabase.auth.updateUser({
+        data: {
+          name: editName.trim(),
+          phone: editPhone.trim(),
+        }
+      });
+
+      if (authError) {
+        console.warn('[ProfileScreen] Auth metadata update warning:', authError.message);
+      }
+
+      // 2. Update public.users database table
+      const { error: dbError } = await supabase
         .from('users')
         .update({ 
-          full_name: editName,
-          user_phone_number: editPhone 
+          full_name: editName.trim(),
+          user_phone_number: editPhone.trim() 
         })
         .eq('email', user.email);
 
-      if (error) throw error;
-      
-      // Update local state (this is a bit hacky without a proper context update, 
-      // but it works for immediately reflecting the change on the screen)
-      user.name = editName;
-      user.phone = editPhone;
+      if (dbError) {
+        console.warn('[ProfileScreen] Users table update warning:', dbError.message);
+      }
+
+      // 3. Update global AuthContext state so all screens see the change immediately
+      const updatedUser = {
+        ...user,
+        name: editName.trim(),
+        phone: editPhone.trim(),
+      };
+
+      dispatch({
+        type: 'LOGIN_SUCCESS',
+        payload: {
+          user: updatedUser,
+          token: state.auth.token || '',
+        },
+      });
       
       setIsEditing(false);
       Alert.alert('Success', 'Profile updated successfully!');
@@ -91,7 +125,7 @@ const ProfileScreen: React.FC = () => {
           <View style={styles.avatarContainer}>
             <User size={60} color="#dc2626" />
           </View>
-          <Text style={styles.userName}>{user.name}</Text>
+          <Text style={styles.userName}>{user.name || 'Citizen'}</Text>
           <Text style={styles.userEmail}>{user.email}</Text>
         </View>
 
@@ -112,7 +146,7 @@ const ProfileScreen: React.FC = () => {
                   placeholder="Enter your full name"
                 />
               ) : (
-                <Text style={styles.detailValue}>{user.name}</Text>
+                <Text style={styles.detailValue}>{user.name || 'Not provided'}</Text>
               )}
             </View>
           </View>
@@ -123,7 +157,7 @@ const ProfileScreen: React.FC = () => {
             </View>
             <View style={styles.detailContent}>
               <Text style={styles.detailLabel}>Email Address</Text>
-              <Text style={styles.detailValue}>{user.email} (Uneditable)</Text>
+              <Text style={styles.detailValue}>{user.email}</Text>
             </View>
           </View>
 
