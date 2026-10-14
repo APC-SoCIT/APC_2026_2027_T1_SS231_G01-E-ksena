@@ -236,18 +236,48 @@ app.post('/api/report-incident', async (req, res) => {
     }
 
       // Find responders for the detected service type with their station coordinates
-      const { data: responders, error: responderError } = await supabase
+      // Try case-insensitive matching and handle is_active (true or true-like)
+      let { data: responders, error: responderError } = await supabase
         .from('responders')
         .select('responder_id, responder_phone_number, name, service_type, is_active, responder_location_lat, responder_location_lng')
-        .eq('service_type', detectedService)
+        .ilike('service_type', `%${detectedService}%`)
         .eq('is_active', true);
 
-      console.log(`[DEBUG] Looking for ${detectedService} responders, found:`, responders?.length);
+      // Fallback 1: check if is_active is null or not strictly boolean in database
+      if (!responders || responders.length === 0) {
+        const { data: fallbackServiceResponders } = await supabase
+          .from('responders')
+          .select('responder_id, responder_phone_number, name, service_type, is_active, responder_location_lat, responder_location_lng')
+          .ilike('service_type', `%${detectedService}%`);
 
-      if (responderError) {
-        console.error('[ERROR] Failed to query responders:', responderError);
-      } else if (!responders || responders.length === 0) {
-        console.error(`[WARNING] No active responders found for service type: ${detectedService}`);
+        if (fallbackServiceResponders && fallbackServiceResponders.length > 0) {
+          responders = fallbackServiceResponders.filter(r => r.is_active !== false);
+        }
+      }
+
+      // Fallback 2: If still 0, pick any available active responder regardless of service_type
+      if (!responders || responders.length === 0) {
+        console.warn(`[WARNING] No active ${detectedService} responders found. Falling back to any active responder...`);
+        const { data: anyResponders } = await supabase
+          .from('responders')
+          .select('responder_id, responder_phone_number, name, service_type, is_active, responder_location_lat, responder_location_lng')
+          .eq('is_active', true);
+
+        if (anyResponders && anyResponders.length > 0) {
+          responders = anyResponders;
+        } else {
+          const { data: allResponders } = await supabase
+            .from('responders')
+            .select('responder_id, responder_phone_number, name, service_type, is_active, responder_location_lat, responder_location_lng')
+            .limit(5);
+          responders = allResponders || [];
+        }
+      }
+
+      console.log(`[DEBUG] Responders available for assignment:`, responders?.length);
+
+      if (!responders || responders.length === 0) {
+        console.error(`[CRITICAL] No responders found in responders table at all!`);
       } else {
         // Traffic-Aware Optimal Dispatch Selection (Fastest Arrival Time)
         let assignedResponder = responders[0];
