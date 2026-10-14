@@ -132,6 +132,8 @@ def blur_faces_in_video(input_path, output_path):
     """
     Reads an input video, detects faces across every frame,
     and applies a heavy Gaussian blur to privacy-protect individuals.
+    Encodes the output using H.264 (libx264, yuv420p) with faststart so HTML5 web browsers
+    can play the resulting MP4 video natively.
     Returns (success: bool, total_faces_detected: int, frame_count: int).
     """
     global face_cascade
@@ -151,11 +153,37 @@ def blur_faces_in_video(input_path, output_path):
     if fps <= 0 or np.isnan(fps):
         fps = 20.0
 
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-    if not writer.isOpened():
-        cap.release()
-        raise RuntimeError("Failed to initialize VideoWriter for blurred video")
+    # Attempt to use imageio-ffmpeg for browser-compatible H.264 encoding
+    ffmpeg_proc = None
+    cv_writer = None
+
+    try:
+        import subprocess
+        import imageio_ffmpeg
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        ffmpeg_cmd = [
+            ffmpeg_exe,
+            '-y',
+            '-f', 'rawvideo',
+            '-vcodec', 'rawvideo',
+            '-s', f"{width}x{height}",
+            '-pix_fmt', 'bgr24',
+            '-r', str(fps),
+            '-i', '-',
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-preset', 'ultrafast',
+            '-movflags', '+faststart',
+            output_path
+        ]
+        ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    except Exception as ffmpeg_err:
+        print(f"[AI SERVICE] [WARNING] imageio-ffmpeg pipe unavailable ({ffmpeg_err}), falling back to cv2.VideoWriter", flush=True)
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        cv_writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        if not cv_writer.isOpened():
+            cap.release()
+            raise RuntimeError("Failed to initialize VideoWriter fallback for blurred video")
 
     total_faces = 0
     frame_count = 0
@@ -167,19 +195,24 @@ def blur_faces_in_video(input_path, output_path):
                 break
             frame_count += 1
 
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            # Detect faces with tuned scaleFactor and minNeighbors
+            # Performance optimization: detect faces on 0.5x downscaled grayscale image for 4x faster detection
+            small_frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
+            gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
+
             faces = face_cascade.detectMultiScale(
                 gray,
-                scaleFactor=1.1,
+                scaleFactor=1.15,
                 minNeighbors=4,
-                minSize=(24, 24)
+                minSize=(20, 20)
             )
 
             if len(faces) > 0:
                 total_faces += len(faces)
-                for (x, y, w, h) in faces:
-                    # Expand region slightly (15%) for full face and hairline coverage
+                for (sx, sy, sw, sh) in faces:
+                    # Scale coordinates back up to full frame resolution (2x)
+                    x, y, w, h = sx * 2, sy * 2, sw * 2, sh * 2
+
+                    # Expand region slightly (15%) for full face coverage
                     pad_w = int(w * 0.15)
                     pad_h = int(h * 0.15)
                     x1 = max(0, x - pad_w)
@@ -194,15 +227,25 @@ def blur_faces_in_video(input_path, output_path):
                     blurred_roi = cv2.GaussianBlur(roi, (kw, kh), 30)
                     frame[y1:y2, x1:x2] = blurred_roi
 
-            writer.write(frame)
+            if ffmpeg_proc and ffmpeg_proc.stdin:
+                ffmpeg_proc.stdin.write(frame.tobytes())
+            elif cv_writer:
+                cv_writer.write(frame)
+
     finally:
         cap.release()
-        writer.release()
+        if ffmpeg_proc:
+            if ffmpeg_proc.stdin:
+                ffmpeg_proc.stdin.close()
+            ffmpeg_proc.wait(timeout=30)
+        if cv_writer:
+            cv_writer.release()
 
     if frame_count == 0 or not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
         raise RuntimeError("Face blur processing generated an invalid or empty video file")
 
     return True, total_faces, frame_count
+
 
 @app.route('/health', methods=['GET'])
 def health():

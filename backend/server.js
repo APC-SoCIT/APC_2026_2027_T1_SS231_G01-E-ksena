@@ -492,63 +492,91 @@ app.post('/api/report-incident', async (req, res) => {
         if (video_url && typeof video_url === 'string' && video_url.startsWith('http')) {
           console.log(`[AI-BLUR] [ASYNC] Processing video for incident ${incident.incident_id}...`);
           const aiUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5000';
-          const aiResponse = await fetch(`${aiUrl}/process-video`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ video_url: video_url })
-          });
+          let aiSuccess = false;
 
-          if (aiResponse.ok) {
-            const aiResult = await aiResponse.json();
-            if (aiResult.success) {
-              if (!validManualService && aiResult.detected_service_type) {
-                aiDetectedService = aiResult.detected_service_type;
-                aiConfidence = aiResult.confidence_score || 0.85;
-                console.log(`[AI] [ASYNC] AI classified video as: ${aiDetectedService} (Confidence: ${aiConfidence})`);
-              }
-              console.log(`[AI-BLUR] [ASYNC] Face blurring succeeded. Detected faces blurred: ${aiResult.faces_blurred ?? 0}`);
+          try {
+            const controller = new AbortController();
+            const fetchTimeout = setTimeout(() => controller.abort(), 60000);
 
-              if (aiResult.has_blurred_video && aiResult.blurred_video_base64) {
-                const blurredBuffer = Buffer.from(aiResult.blurred_video_base64, 'base64');
-                const blurredFileName = `blurred_${Date.now()}_${incident.incident_id.slice(0, 8)}.mp4`;
+            const aiResponse = await fetch(`${aiUrl}/process-video`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ video_url: video_url }),
+              signal: controller.signal
+            });
+            clearTimeout(fetchTimeout);
 
-                const { data: uploadData, error: uploadErr } = await supabase.storage
-                  .from('incident-videos')
-                  .upload(blurredFileName, blurredBuffer, {
-                    contentType: 'video/mp4',
-                    upsert: true
-                  });
+            if (aiResponse.ok) {
+              const aiResult = await aiResponse.json();
+              if (aiResult.success) {
+                if (!validManualService && aiResult.detected_service_type) {
+                  aiDetectedService = aiResult.detected_service_type;
+                  aiConfidence = aiResult.confidence_score || 0.85;
+                  console.log(`[AI] [ASYNC] AI classified video as: ${aiDetectedService} (Confidence: ${aiConfidence})`);
+                }
+                console.log(`[AI-BLUR] [ASYNC] Face blurring succeeded. Detected faces blurred: ${aiResult.faces_blurred ?? 0}`);
 
-                if (uploadErr) {
-                  console.error('[AI-BLUR] [ASYNC] Failed to upload blurred video to storage:', uploadErr);
-                } else {
-                  const { data: urlData } = supabase.storage.from('incident-videos').getPublicUrl(blurredFileName);
-                  if (urlData?.publicUrl) {
-                    blurredVideoUrl = urlData.publicUrl;
-                    console.log(`[AI-BLUR] [ASYNC] Blurred video published: ${blurredVideoUrl}`);
+                if (aiResult.has_blurred_video && aiResult.blurred_video_base64) {
+                  const blurredBuffer = Buffer.from(aiResult.blurred_video_base64, 'base64');
+                  const blurredFileName = `blurred_${Date.now()}_${incident.incident_id.slice(0, 8)}.mp4`;
 
-                    // Update incidents table with verified blurred video
-                    await supabase
-                      .from('incidents')
-                      .update({ video_url: blurredVideoUrl })
-                      .eq('incident_id', incident.incident_id);
+                  const { data: uploadData, error: uploadErr } = await supabase.storage
+                    .from('incident-videos')
+                    .upload(blurredFileName, blurredBuffer, {
+                      contentType: 'video/mp4',
+                      upsert: true
+                    });
 
-                    // Update reports table with verified blurred video
-                    await supabase
-                      .from('reports')
-                      .update({ video_path: blurredVideoUrl, is_processed: true })
-                      .eq('incident_id', incident.incident_id);
+                  if (uploadErr) {
+                    console.error('[AI-BLUR] [ASYNC] Failed to upload blurred video to storage:', uploadErr);
+                  } else {
+                    const { data: urlData } = supabase.storage.from('incident-videos').getPublicUrl(blurredFileName);
+                    if (urlData?.publicUrl) {
+                      blurredVideoUrl = urlData.publicUrl;
+                      console.log(`[AI-BLUR] [ASYNC] Blurred video published: ${blurredVideoUrl}`);
+
+                      // Update incidents table with verified blurred video
+                      await supabase
+                        .from('incidents')
+                        .update({ video_url: blurredVideoUrl })
+                        .eq('incident_id', incident.incident_id);
+
+                      // Update reports table with verified blurred video
+                      await supabase
+                        .from('reports')
+                        .update({ video_path: blurredVideoUrl, is_processed: true })
+                        .eq('incident_id', incident.incident_id);
+
+                      aiSuccess = true;
+                    }
                   }
                 }
+              } else {
+                console.error(`[AI-BLUR] [ASYNC] AI service reported failure: ${aiResult.error}. Raw unblurred video kept private.`);
               }
             } else {
-              console.error(`[AI-BLUR] [ASYNC] AI service reported failure: ${aiResult.error}. Raw unblurred video kept private.`);
+              const errText = await aiResponse.text();
+              console.error(`[AI-BLUR] [ASYNC] AI service HTTP ${aiResponse.status}: ${errText}. Raw unblurred video kept private.`);
             }
-          } else {
-            const errText = await aiResponse.text();
-            console.error(`[AI-BLUR] [ASYNC] AI service HTTP ${aiResponse.status}: ${errText}. Raw unblurred video kept private.`);
+          } catch (fetchErr) {
+            console.error(`[AI-BLUR] [ASYNC] AI service call error/timeout:`, fetchErr.message);
+          }
+
+          // If blurring failed or timed out, keep raw unblurred video private and update placeholder to mock://blur-failed
+          if (!aiSuccess) {
+            console.log(`[AI-BLUR] [ASYNC] Blurring unfulfilled for ${incident.incident_id}. Updating placeholder to mock://blur-failed for privacy.`);
+            await supabase
+              .from('incidents')
+              .update({ video_url: 'mock://blur-failed' })
+              .eq('incident_id', incident.incident_id);
+
+            await supabase
+              .from('reports')
+              .update({ video_path: 'mock://blur-failed', is_processed: true })
+              .eq('incident_id', incident.incident_id);
           }
         }
+
 
         // Insert AI analysis record
         const { error: aiError } = await supabase.from('ai_analysis').insert({
