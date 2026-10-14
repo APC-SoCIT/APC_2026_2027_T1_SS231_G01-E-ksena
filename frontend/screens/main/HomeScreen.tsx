@@ -201,7 +201,7 @@ const HomeScreen: React.FC = () => {
           },
           (newLocation) => {
             const { latitude: newLat, longitude: newLng } = newLocation.coords;
-            setLocation(newLat, newLng);
+            setLocation(newLat, newLng, state.location.address || undefined);
             if (isInitialCenter) {
               isInitialCenter = false;
               setMapCenter([newLng, newLat]);

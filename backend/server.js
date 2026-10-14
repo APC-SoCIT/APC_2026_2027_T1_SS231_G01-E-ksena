@@ -200,6 +200,33 @@ app.post('/api/report-incident', async (req, res) => {
 
     const reporterUserId = await getOrCreateReporterUser(user_phone_number, user_id);
 
+    // Resolve location_address: if null/empty, reverse geocode or use GPS coordinate string fallback
+    let resolvedAddress = location_address && String(location_address).trim() ? String(location_address).trim() : null;
+
+    if (!resolvedAddress && lat && lng) {
+      const mapboxToken = process.env.MAPBOX_TOKEN || process.env.EXPO_PUBLIC_MAPBOX_TOKEN || 'pk.eyJ1IjoicGV0ZXItMTExMSIsImEiOiJjbXBlOGx0bW4wMXl1MnBxejEyaWJ0ZmZhIn0.njE1TKxllt2JYRt2RmqfnA';
+      try {
+        const geoUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?access_token=${mapboxToken}&limit=1`;
+        const geoResp = await fetch(geoUrl);
+        if (geoResp.ok) {
+          const geoData = await geoResp.json();
+          if (geoData.features && geoData.features.length > 0 && geoData.features[0].place_name) {
+            resolvedAddress = geoData.features[0].place_name;
+            console.log(`[GEOCODE] Reverse geocoded (${lat}, ${lng}) -> ${resolvedAddress}`);
+          }
+        }
+      } catch (geoErr) {
+        console.warn('[GEOCODE] Reverse geocoding failed:', geoErr.message);
+      }
+
+      // Hard fallback if geocoding failed or returned empty: format coordinate string so location_address is NEVER NULL
+      if (!resolvedAddress) {
+        resolvedAddress = `Lat: ${parseFloat(lat).toFixed(6)}, Lng: ${parseFloat(lng).toFixed(6)}`;
+      }
+    } else if (!resolvedAddress) {
+      resolvedAddress = 'Coordinates unavailable';
+    }
+
     // Create incident record with the reporter user reference
     const { data: incident, error: incidentError } = await supabase
       .from('incidents')
@@ -208,7 +235,7 @@ app.post('/api/report-incident', async (req, res) => {
         user_phone_number: user_phone_number,
         incident_location_lat: lat,
         incident_location_lng: lng,
-        location_address: location_address || null,
+        location_address: resolvedAddress,
         video_url: video_url || 'mock://video' // Mock URL, no actual storage needed for now
       })
       .select()
@@ -218,7 +245,7 @@ app.post('/api/report-incident', async (req, res) => {
       console.error('[ERROR] Failed to create incident:', incidentError);
       return res.status(500).json({
         success: false,
-        error: 'Failed to create incident record'
+        error: incidentError.message || 'Failed to create incident record'
       });
     }
 
@@ -397,7 +424,7 @@ app.post('/api/report-incident', async (req, res) => {
             .insert({
               user_id: reporterUserId,
               incident_id: incident.incident_id,
-              content: location_address || 'Emergency Report',
+              content: resolvedAddress || 'Emergency Report',
               classified_as: detectedService,
               report_location_lat: lat,
               report_location_lng: lng,
