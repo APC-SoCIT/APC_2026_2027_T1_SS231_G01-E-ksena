@@ -31,7 +31,7 @@ interface ResponderData {
 
 const HomeScreen: React.FC = () => {
   const navigation = useNavigation();
-  const { state, setLocation } = useAuth();
+  const { state, setLocation, pendingResponderRoute } = useAuth();
 
   const [responderData, setResponderData] = useState<ResponderData | null>(null);
   const dispatchChannelRef = useRef<any>(null);
@@ -43,6 +43,105 @@ const HomeScreen: React.FC = () => {
     state.location.longitude || 121.0215128,
     state.location.latitude || 14.5310248,
   ]);
+
+  // 1. Instantly sync whenever a new route is dispatched
+  useEffect(() => {
+    if (pendingResponderRoute) {
+      console.log('[HomeScreen] Syncing with pendingResponderRoute:', pendingResponderRoute);
+      setResponderData({
+        incidentId: pendingResponderRoute.incidentId,
+        userLocation: pendingResponderRoute.userLocation,
+        responderLocation: pendingResponderRoute.responderStart,
+        responderBase: pendingResponderRoute.responderBase,
+        dispatcherName: pendingResponderRoute.dispatcherName || 'Emergency Responder',
+        dispatcherPhone: pendingResponderRoute.dispatcherPhone,
+        serviceType: pendingResponderRoute.serviceType,
+      });
+    }
+  }, [pendingResponderRoute]);
+
+  // 2. Also check on screen focus or restore active incident from Supabase if app was reloaded
+  useEffect(() => {
+    const checkActiveIncident = async () => {
+      const pending = consumePendingResponderRoute();
+      if (pending) {
+        setResponderData({
+          incidentId: pending.incidentId,
+          userLocation: pending.userLocation,
+          responderLocation: pending.responderStart,
+          responderBase: pending.responderBase,
+          dispatcherName: pending.dispatcherName || 'Emergency Responder',
+          dispatcherPhone: pending.dispatcherPhone,
+          serviceType: pending.serviceType,
+        });
+        return;
+      }
+
+      // If not in memory, query Supabase for citizen's most recent active incident
+      if (!responderData && state.auth.user?.id) {
+        try {
+          const { data: latestIncident } = await supabase
+            .from('incidents')
+            .select('incident_id, incident_location_lat, incident_location_lng, location_address, created_at')
+            .eq('user_id', state.auth.user.id)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (latestIncident) {
+            // Check if there is an active (unresolved) dispatch for it
+            const { data: activeDispatch } = await supabase
+              .from('dispatch')
+              .select('status, current_lat, current_lng, responder_id')
+              .eq('incident_id', latestIncident.incident_id)
+              .neq('status', 'resolved')
+              .maybeSingle();
+
+            if (activeDispatch) {
+              const { data: resp } = await supabase
+                .from('responders')
+                .select('name, responder_phone_number, service_type, responder_location_lat, responder_location_lng, station_address')
+                .eq('responder_id', activeDispatch.responder_id)
+                .maybeSingle();
+
+              const rLat = activeDispatch.current_lat || resp?.responder_location_lat || (latestIncident.incident_location_lat + 0.005);
+              const rLng = activeDispatch.current_lng || resp?.responder_location_lng || (latestIncident.incident_location_lng - 0.005);
+
+              setResponderData({
+                incidentId: latestIncident.incident_id,
+                userLocation: {
+                  latitude: parseFloat(latestIncident.incident_location_lat),
+                  longitude: parseFloat(latestIncident.incident_location_lng),
+                  address: latestIncident.location_address,
+                },
+                responderLocation: {
+                  latitude: parseFloat(rLat),
+                  longitude: parseFloat(rLng),
+                },
+                responderBase: resp ? {
+                  name: resp.name,
+                  latitude: parseFloat(resp.responder_location_lat || rLat),
+                  longitude: parseFloat(resp.responder_location_lng || rLng),
+                  address: resp.station_address,
+                } : undefined,
+                dispatcherName: resp?.name || 'Emergency Responder',
+                dispatcherPhone: resp?.responder_phone_number,
+                serviceType: resp?.service_type,
+                status: activeDispatch.status,
+              });
+            }
+          }
+        } catch (restoreErr) {
+          console.warn('[HomeScreen] Could not restore active incident:', restoreErr);
+        }
+      }
+    };
+
+    const unsubscribe = (navigation as any).addListener?.('focus', checkActiveIncident);
+    checkActiveIncident();
+
+    return () => unsubscribe?.();
+  }, [navigation, state.auth.user?.id]);
 
   useEffect(() => {
     let locationSubscription: Location.LocationSubscription | null = null;
@@ -148,24 +247,6 @@ const HomeScreen: React.FC = () => {
     }
   }, [responderData, state.location]);
 
-  // Listen for incoming responder route when screen focuses
-  useEffect(() => {
-    const unsubscribe = (navigation as any).addListener?.('focus', () => {
-      const pending = consumePendingResponderRoute();
-      if (pending) {
-        setResponderData({
-          incidentId: pending.incidentId,
-          userLocation: pending.userLocation,
-          responderLocation: pending.responderStart,
-          responderBase: pending.responderBase,
-          dispatcherName: pending.dispatcherName || 'Emergency Responder',
-          dispatcherPhone: pending.dispatcherPhone,
-          serviceType: pending.serviceType,
-        });
-      }
-    });
-    return () => unsubscribe?.();
-  }, [navigation]);
 
   // Listen for dispatch live updates (status, current_lat, current_lng)
   useEffect(() => {
