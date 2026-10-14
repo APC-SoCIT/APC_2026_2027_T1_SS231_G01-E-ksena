@@ -201,8 +201,6 @@ app.post('/api/report-incident', async (req, res) => {
     if (!validManualService) {
       try {
         console.log(`[AI] Sending video to AI Microservice for incident ${incident.incident_id}...`);
-
-      try {
         const aiUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5000';
         const aiResponse = await fetch(`${aiUrl}/analyze-video`, {
           method: 'POST',
@@ -356,9 +354,6 @@ app.post('/api/report-incident', async (req, res) => {
         // -----------------------------------------------------------
 
       }
-    } catch (error) {
-      console.error('[ERROR] Error in AI analysis/assignment:', error);
-    }
 
     // Return incident payload once AI + dispatch work is queued/complete
     res.json({
