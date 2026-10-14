@@ -56,31 +56,63 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-const getOrCreateReporterUser = async (phoneNumber) => {
+const getOrCreateReporterUser = async (phoneNumber, candidateUserId) => {
   const normalizedPhone = phoneNumber?.trim();
 
-  if (!normalizedPhone) {
-    throw new Error('user_phone_number is required');
+  // 1. Check if candidateUserId is already a valid user_id in the users table
+  if (candidateUserId) {
+    const { data: userById } = await supabase
+      .from('users')
+      .select('user_id')
+      .eq('user_id', candidateUserId)
+      .maybeSingle();
+
+    if (userById?.user_id) {
+      return userById.user_id;
+    }
+
+    // 2. Check if candidateUserId is an auth_user_id (Supabase Auth UID)
+    const { data: userByAuthId } = await supabase
+      .from('users')
+      .select('user_id')
+      .eq('auth_user_id', candidateUserId)
+      .maybeSingle();
+
+    if (userByAuthId?.user_id) {
+      return userByAuthId.user_id;
+    }
   }
 
-  const { data: existingUser, error: selectError } = await supabase
+  // 3. Look up by normalized phone number
+  if (normalizedPhone && normalizedPhone !== 'unknown') {
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('user_id')
+      .eq('user_phone_number', normalizedPhone)
+      .maybeSingle();
+
+    if (existingUser?.user_id) {
+      return existingUser.user_id;
+    }
+  }
+
+  // 4. Fallback: query default 'unknown' reporter user
+  const { data: defaultUser } = await supabase
     .from('users')
     .select('user_id')
-    .eq('user_phone_number', normalizedPhone)
+    .eq('user_phone_number', 'unknown')
     .maybeSingle();
 
-  if (selectError && selectError.code !== 'PGRST116') {
-    throw selectError;
+  if (defaultUser?.user_id) {
+    return defaultUser.user_id;
   }
 
-  if (existingUser?.user_id) {
-    return existingUser.user_id;
-  }
-
+  // 5. If not found, create new reporter row
   const { data: createdUser, error: insertError } = await supabase
     .from('users')
     .insert({
-      user_phone_number: normalizedPhone,
+      user_phone_number: normalizedPhone || 'unknown',
+      auth_user_id: candidateUserId || null,
       full_name: null,
       email: null
     })
@@ -88,6 +120,9 @@ const getOrCreateReporterUser = async (phoneNumber) => {
     .single();
 
   if (insertError) {
+    // If insert failed due to concurrent race, fetch whatever is there
+    const { data: raceUser } = await supabase.from('users').select('user_id').limit(1).single();
+    if (raceUser?.user_id) return raceUser.user_id;
     throw insertError;
   }
 
@@ -163,7 +198,7 @@ app.post('/api/report-incident', async (req, res) => {
 
     console.log(`[REPORT] New incident reported by ${user_phone_number} at ${lat}, ${lng} (service: ${service_type || 'auto'})`);
 
-    const reporterUserId = user_id || await getOrCreateReporterUser(user_phone_number);
+    const reporterUserId = await getOrCreateReporterUser(user_phone_number, user_id);
 
     // Create incident record with the reporter user reference
     const { data: incident, error: incidentError } = await supabase
