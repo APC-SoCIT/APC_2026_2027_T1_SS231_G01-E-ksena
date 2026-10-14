@@ -23,11 +23,14 @@ import {
   ChevronDown,
   Clock,
   Radio,
+  Flame,
+  ShieldAlert,
+  HeartPulse,
 } from 'lucide-react-native';
 import * as SMS from 'expo-sms';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useAuth } from '../../context/AuthContext';
-import { sendChatReply } from '../../services/ReportService';
+import { sendChatReply, sendVideoReport } from '../../services/ReportService';
 import { supabase } from '../../services/supabaseClient';
 
 interface Message {
@@ -137,18 +140,69 @@ const SmsChatScreen: React.FC = () => {
     }
   };
 
-  const handleReportCommand = async () => {
+  const triggerEmergencyReport = async (serviceType: 'medical' | 'police' | 'fire', label: string) => {
     const { latitude, longitude, address } = state.location;
     const locationString = address || (latitude && longitude ? `${latitude}, ${longitude}` : 'Location pending');
     const mapsLink = latitude && longitude ? `https://maps.google.com/?q=${latitude},${longitude}` : '';
 
-    const body = `EMERGENCY ALERT: I need immediate assistance!
+    const body = `EMERGENCY ALERT [${label.toUpperCase()}]: Immediate assistance requested!
 Location: ${locationString}
 ${mapsLink ? `Map: ${mapsLink}` : ''}
-${incidentId ? `Incident ID: #${String(incidentId).slice(0, 8)}` : ''}
 Sent via E-ksena`;
 
-    await sendMessage(body, '/report');
+    // 1. Send in-app message
+    await sendMessage(body, `/report ${label}`);
+
+    // 2. Dispatch incident with specific serviceType so backend picks the fastest traffic-based responder
+    try {
+      const userPhone = state.auth.user?.phone || '+639123456789';
+      if (latitude && longitude) {
+        addMessage(`Dispatching fastest available ${label} responder to your location...`, 'system');
+        const reportResult = await sendVideoReport(
+          'mock://sms-report',
+          { latitude, longitude, address: address || undefined },
+          userPhone,
+          'mock://sms-report',
+          serviceType
+        );
+
+        if (reportResult.success && reportResult.report) {
+          const assigned = reportResult.report.assignedDispatcher;
+          addMessage(
+            `✅ ${label} Unit Dispatched: ${assigned?.name || 'Emergency Responder'} (${assigned?.phone || 'On route'})`,
+            'system'
+          );
+        }
+      }
+    } catch (dispatchErr) {
+      console.warn('[SMS CHAT] Incident dispatch error:', dispatchErr);
+    }
+  };
+
+  const handleReportCommand = () => {
+    Alert.alert(
+      '🚨 Which Emergency Would You Like to Report?',
+      'Please select the type of emergency so we can dispatch the closest, fastest responder:',
+      [
+        {
+          text: '🩺 Medical Emergency',
+          onPress: () => triggerEmergencyReport('medical', 'Medical'),
+        },
+        {
+          text: '🚓 Police / Crime',
+          onPress: () => triggerEmergencyReport('police', 'Police'),
+        },
+        {
+          text: '🚒 Fire Emergency',
+          onPress: () => triggerEmergencyReport('fire', 'Fire'),
+        },
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+      ],
+      { cancelable: true }
+    );
   };
 
   const handleStatusCommand = async () => {

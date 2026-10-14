@@ -151,7 +151,7 @@ app.get('/health', (req, res) => {
 // ============================================
 app.post('/api/report-incident', async (req, res) => {
   try {
-    const { video_url, lat, lng, user_phone_number, location_address, user_id } = req.body;
+    const { video_url, lat, lng, user_phone_number, location_address, user_id, service_type } = req.body;
 
     // Validate required fields
     if (!lat || !lng || !user_phone_number) {
@@ -161,7 +161,7 @@ app.post('/api/report-incident', async (req, res) => {
       });
     }
 
-    console.log(`[REPORT] New incident reported by ${user_phone_number} at ${lat}, ${lng}`);
+    console.log(`[REPORT] New incident reported by ${user_phone_number} at ${lat}, ${lng} (service: ${service_type || 'auto'})`);
 
     const reporterUserId = user_id || await getOrCreateReporterUser(user_phone_number);
 
@@ -189,12 +189,18 @@ app.post('/api/report-incident', async (req, res) => {
 
     console.log(`[REPORT] Incident created: ${incident.incident_id}`);
 
-    // Call the Python AI Microservice to analyze the video
-    try {
-      console.log(`[AI] Sending video to AI Microservice for incident ${incident.incident_id}...`);
+    // If citizen explicitly selected service type (fire/police/medical), use it directly
+    const validManualService = ['medical', 'police', 'fire'].includes(String(service_type).toLowerCase())
+      ? String(service_type).toLowerCase()
+      : null;
 
-      let detectedService = 'medical'; // Fallback
-      let confidence = 0.85;
+    let detectedService = validManualService || 'medical';
+    let confidence = validManualService ? 1.0 : 0.85;
+
+    // Call Python AI Microservice only if no manual service type was specified and video is provided
+    if (!validManualService) {
+      try {
+        console.log(`[AI] Sending video to AI Microservice for incident ${incident.incident_id}...`);
 
       try {
         const aiUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5000';
@@ -216,19 +222,20 @@ app.post('/api/report-incident', async (req, res) => {
         } else {
           console.log(`[AI] AI Service unreachable (Status: ${aiResponse.status}). Using fallback classification.`);
         }
-      } catch (fetchErr) {
-        console.log('[AI] AI Microservice is offline or unreachable. Using fallback classification.');
+      } catch (aiMicroErr) {
+        console.warn('[AI] Error in microservice pipeline:', aiMicroErr);
       }
+    }
 
-      const { error: aiError } = await supabase.from('ai_analysis').insert({
-        incident_id: incident.incident_id,
-        detected_service_type: detectedService,
-        confidence_score: confidence
-      });
+    const { error: aiError } = await supabase.from('ai_analysis').insert({
+      incident_id: incident.incident_id,
+      detected_service_type: detectedService,
+      confidence_score: confidence
+    });
 
-      if (aiError) {
-        console.error('[ERROR] Failed to insert AI analysis row:', aiError);
-      }
+    if (aiError) {
+      console.error('[ERROR] Failed to insert AI analysis row:', aiError);
+    }
 
       // Find responders for the detected service type with their station coordinates
       const { data: responders, error: responderError } = await supabase
