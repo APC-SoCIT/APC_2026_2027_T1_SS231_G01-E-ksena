@@ -68,10 +68,61 @@ load_model()
 # =======================================================
 # 3. FACE DETECTION & BLURRING PIPELINE
 # =======================================================
-# Load OpenCV Haar Cascade for face detection
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-if face_cascade.empty():
-    print("[AI SERVICE] [WARNING] Haar Cascade failed to load from cv2.data.haarcascades", flush=True)
+# Bundled and standard paths for haarcascade_frontalface_default.xml
+BUNDLED_CASCADE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "haarcascades", "haarcascade_frontalface_default.xml")
+
+def get_face_cascade():
+    """
+    Safely retrieves and initializes the OpenCV Haar Cascade classifier for face detection.
+    Supports cv2.CascadeClassifier, cv2.objdetect.CascadeClassifier, and bundled XML fallbacks.
+    """
+    classifier_cls = getattr(cv2, 'CascadeClassifier', None)
+    if classifier_cls is None:
+        try:
+            import cv2.objdetect as objdetect
+            classifier_cls = getattr(objdetect, 'CascadeClassifier', None)
+        except Exception:
+            pass
+
+    if classifier_cls is None:
+        print("[AI SERVICE] [ERROR] cv2.CascadeClassifier is not available in the installed OpenCV package.", flush=True)
+        return None
+
+    # Candidate XML paths
+    candidates = []
+    # 1. Bundled repo XML path
+    if os.path.exists(BUNDLED_CASCADE_PATH):
+        candidates.append(BUNDLED_CASCADE_PATH)
+
+    # 2. cv2.data.haarcascades built-in path
+    if hasattr(cv2, 'data') and hasattr(cv2.data, 'haarcascades'):
+        candidates.append(os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml'))
+
+    # 3. Common system and local paths
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "haarcascade_frontalface_default.xml"))
+    candidates.append('/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml')
+    candidates.append('/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml')
+
+    for path in candidates:
+        if path and os.path.exists(path):
+            try:
+                cascade = classifier_cls(path)
+                if not cascade.empty():
+                    print(f"[AI SERVICE] [SUCCESS] Loaded Haar Cascade from: {path}", flush=True)
+                    return cascade
+            except Exception as e:
+                print(f"[AI SERVICE] Failed loading cascade from {path}: {e}", flush=True)
+
+    print("[AI SERVICE] [WARNING] Could not load any valid Haar Cascade XML.", flush=True)
+    return None
+
+# Initialize face cascade safely (never crashing startup)
+face_cascade = None
+try:
+    face_cascade = get_face_cascade()
+except Exception as e:
+    print(f"[AI SERVICE] [WARNING] Exception initializing face cascade: {e}", flush=True)
+    face_cascade = None
 
 def blur_faces_in_video(input_path, output_path):
     """
@@ -79,6 +130,13 @@ def blur_faces_in_video(input_path, output_path):
     and applies a heavy Gaussian blur to privacy-protect individuals.
     Returns (success: bool, total_faces_detected: int, frame_count: int).
     """
+    global face_cascade
+    if face_cascade is None or face_cascade.empty():
+        face_cascade = get_face_cascade()
+
+    if face_cascade is None or face_cascade.empty():
+        raise RuntimeError("OpenCV Face CascadeClassifier is not available or failed to load Haar XML")
+
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         raise RuntimeError(f"Could not open video file {input_path}")
@@ -147,7 +205,7 @@ def health():
     return jsonify({
         "status": "ok",
         "model_loaded": model is not None,
-        "face_cascade_loaded": not face_cascade.empty()
+        "face_cascade_loaded": face_cascade is not None and not face_cascade.empty()
     })
 
 @app.route('/process-video', methods=['POST'])
