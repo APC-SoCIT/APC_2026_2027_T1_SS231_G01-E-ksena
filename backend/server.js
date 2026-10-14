@@ -230,26 +230,77 @@ app.post('/api/report-incident', async (req, res) => {
         console.error('[ERROR] Failed to insert AI analysis row:', aiError);
       }
 
-      // Find responders for the detected service type
+      // Find responders for the detected service type with their station coordinates
       const { data: responders, error: responderError } = await supabase
         .from('responders')
-        .select('responder_id, responder_phone_number, name, service_type, is_active')
+        .select('responder_id, responder_phone_number, name, service_type, is_active, responder_location_lat, responder_location_lng')
         .eq('service_type', detectedService)
         .eq('is_active', true);
 
-      console.log(`[DEBUG] Looking for ${detectedService} responders, found:`, responders);
+      console.log(`[DEBUG] Looking for ${detectedService} responders, found:`, responders?.length);
 
       if (responderError) {
         console.error('[ERROR] Failed to query responders:', responderError);
       } else if (!responders || responders.length === 0) {
         console.error(`[WARNING] No active responders found for service type: ${detectedService}`);
       } else {
-        // Randomly select an available responder
-        const randomIndex = Math.floor(Math.random() * responders.length);
-        const assignedResponder = responders[randomIndex];
+        // Traffic-Aware Optimal Dispatch Selection (Fastest Arrival Time)
+        let assignedResponder = responders[0];
+        const mapboxToken = process.env.MAPBOX_TOKEN || process.env.EXPO_PUBLIC_MAPBOX_TOKEN || 'pk.eyJ1IjoicGV0ZXItMTExMSIsImEiOiJjbXBlOGx0bW4wMXl1MnBxejEyaWJ0ZmZhIn0.njE1TKxllt2JYRt2RmqfnA';
+
+        try {
+          if (responders.length > 1 && lat && lng && mapboxToken) {
+            console.log(`[DISPATCH] Calculating live road traffic ETA for ${responders.length} candidates...`);
+
+            // Check traffic-based driving duration for each candidate station
+            const candidatesWithETA = await Promise.all(
+              responders.map(async (cand) => {
+                const candLat = cand.responder_location_lat ? parseFloat(cand.responder_location_lat) : null;
+                const candLng = cand.responder_location_lng ? parseFloat(cand.responder_location_lng) : null;
+
+                if (!candLat || !candLng) {
+                  return { responder: cand, durationSec: 999999 };
+                }
+
+                try {
+                  const url = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${candLng},${candLat};${lng},${lat}?access_token=${mapboxToken}&overview=false`;
+                  const resp = await fetch(url);
+                  const data = await resp.json();
+
+                  if (data.code === 'Ok' && data.routes && data.routes[0]) {
+                    const durationSec = data.routes[0].duration; // live traffic duration in seconds
+                    console.log(`[DISPATCH] Candidate ${cand.name} (${cand.responder_id}) -> ETA: ${(durationSec / 60).toFixed(1)} mins`);
+                    return { responder: cand, durationSec };
+                  }
+                } catch (candErr) {
+                  console.warn(`[DISPATCH] Failed ETA check for ${cand.name}:`, candErr.message);
+                }
+
+                // Fallback Euclidean calculation if traffic API is temporarily unreachable
+                const dLat = candLat - lat;
+                const dLng = candLng - lng;
+                const distApprox = Math.sqrt(dLat * dLat + dLng * dLng);
+                return { responder: cand, durationSec: distApprox * 100000 };
+              })
+            );
+
+            // Sort by lowest duration (fastest arrival time taking traffic into account)
+            candidatesWithETA.sort((a, b) => a.durationSec - b.durationSec);
+            assignedResponder = candidatesWithETA[0].responder;
+            console.log(
+              `[DISPATCH] 🏆 Optimal responder selected: ${assignedResponder.name} with fastest ETA: ${(candidatesWithETA[0].durationSec / 60).toFixed(1)} mins`
+            );
+          } else {
+            // If only 1 responder or no coordinates, assign directly
+            assignedResponder = responders[0];
+          }
+        } catch (optimalErr) {
+          console.warn('[DISPATCH] Error during traffic ETA evaluation, falling back to first available:', optimalErr);
+          assignedResponder = responders[0];
+        }
 
         console.log(
-          `[ASSIGN] Randomly selected responder ${assignedResponder.responder_phone_number} (${assignedResponder.name}) from ${responders.length} available responders for incident ${incident.incident_id}`
+          `[ASSIGN] Selected responder ${assignedResponder.responder_phone_number} (${assignedResponder.name}) for incident ${incident.incident_id}`
         );
 
         // Create a dispatch row (post‑AI "dispatch" record)
