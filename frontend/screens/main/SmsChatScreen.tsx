@@ -163,7 +163,8 @@ Sent via E-ksena`;
           { latitude, longitude, address: address || undefined },
           userPhone,
           'mock://sms-report',
-          serviceType
+          serviceType,
+          state.auth.user?.id
         );
 
         if (reportResult.success && reportResult.report) {

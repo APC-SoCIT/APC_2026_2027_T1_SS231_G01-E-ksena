@@ -254,7 +254,8 @@ export const sendVideoReport = async (
   location: { latitude: number; longitude: number; address?: string },
   userPhoneNumber: string,
   videoUrl?: string,
-  serviceType?: 'medical' | 'police' | 'fire'
+  serviceType?: 'medical' | 'police' | 'fire',
+  userId?: string
 ): Promise<ReportResponse> => {
   try {
     console.log(`[REAL API] ========== STARTING VIDEO REPORT CREATION ==========`);
@@ -263,7 +264,7 @@ export const sendVideoReport = async (
     console.log(`[REAL API] User phone:`, userPhoneNumber);
     console.log(`[REAL API] Service type:`, serviceType || 'auto-detect');
 
-    // Backend expects: { lat, lng, user_phone_number, location_address, video_url, service_type }
+    // Backend expects: { lat, lng, user_phone_number, location_address, video_url, service_type, user_id }
     const requestData = {
       lat: location.latitude,
       lng: location.longitude,
@@ -271,6 +272,7 @@ export const sendVideoReport = async (
       location_address: location.address || null,
       video_url: videoUrl || 'mock://video',
       service_type: serviceType,
+      user_id: userId || null,
     };
 
     console.log(`[REAL API] Request payload:`, JSON.stringify(requestData, null, 2));

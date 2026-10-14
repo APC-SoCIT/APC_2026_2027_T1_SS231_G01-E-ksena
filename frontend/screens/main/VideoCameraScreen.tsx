@@ -149,8 +149,16 @@ const VideoCameraScreen: React.FC = () => {
       if (!latitude || !longitude) throw new Error('Location is missing');
       
       const userPhoneNumber = state.auth.user?.phone ? String(state.auth.user.phone) : 'unknown';
+      const userId = state.auth.user?.id;
       
-      const result = await sendVideoReport(video.uri, { latitude, longitude, address: address ?? undefined }, userPhoneNumber, publicUrl);
+      const result = await sendVideoReport(
+        video.uri,
+        { latitude, longitude, address: address ?? undefined },
+        userPhoneNumber,
+        publicUrl,
+        undefined,
+        userId
+      );
       
       setIsAnalyzing(false);
 

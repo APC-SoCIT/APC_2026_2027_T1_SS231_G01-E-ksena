@@ -78,17 +78,28 @@ const HomeScreen: React.FC = () => {
       }
 
       // If not in memory, query Supabase for citizen's most recent active incident
-      if (!responderData && state.auth.user?.id) {
+      if (!responderData && (state.auth.user?.id || state.auth.user?.phone)) {
         try {
-          const { data: latestIncident } = await supabase
+          const userPhone = state.auth.user?.phone;
+          const userId = state.auth.user?.id;
+
+          let incidentQuery = supabase
             .from('incidents')
             .select('incident_id, incident_location_lat, incident_location_lng, location_address, created_at')
-            .eq('user_id', state.auth.user.id)
             .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
+            .limit(1);
 
-          if (latestIncident) {
+          if (userId && userPhone) {
+            incidentQuery = incidentQuery.or(`user_id.eq.${userId},user_phone_number.eq.${userPhone}`);
+          } else if (userId) {
+            incidentQuery = incidentQuery.eq('user_id', userId);
+          } else if (userPhone) {
+            incidentQuery = incidentQuery.eq('user_phone_number', userPhone);
+          }
+
+          const { data: latestIncident, error: incErr } = await incidentQuery.maybeSingle();
+
+          if (latestIncident && !incErr) {
             // Check if there is an active (unresolved) dispatch for it
             const { data: activeDispatch } = await supabase
               .from('dispatch')
@@ -395,20 +406,6 @@ const HomeScreen: React.FC = () => {
           longitudeDelta: 0.015,
         }}
       >
-        {/* User location custom pin */}
-        <Marker
-          coordinate={{ latitude: userCoordinate[1], longitude: userCoordinate[0] }}
-          anchor={{ x: 0.5, y: 0.5 }}
-          flat={true}
-          title="Your Location"
-        >
-          <View style={styles.userMarkerPulse}>
-            <View style={styles.userMarker}>
-              <View style={styles.markerDot} />
-            </View>
-          </View>
-        </Marker>
-
         {/* Responder markers and route */}
         {responderData && (
           <>
