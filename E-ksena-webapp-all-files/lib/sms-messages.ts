@@ -150,10 +150,20 @@ export function wakeSmsBackend(): void {
   fetch(`${SMS_BACKEND_URL}/health`).catch(() => undefined);
 }
 
+/** How many times to retry a send that the provider refused transiently. */
+const SEND_MAX_RETRIES = 2;
+/** Pause between retries so the provider has time to cool down. */
+const SEND_RETRY_DELAY_MS = 3000;
+
 /**
  * Asks the backend to deliver a queued message. The backend sends it through
  * UniSMS and marks the row sent or failed itself, so the outcome arrives on
  * the message, not here.
+ *
+ * When the provider refuses a message (4xx other than auth errors) the send is
+ * retried up to {@link SEND_MAX_RETRIES} times with a short delay. Before each
+ * retry the message row is reset to `queued` so the edge function can claim it
+ * again.
  *
  * `connected` is false when there is no working sender to hand it to: the
  * backend cannot be reached, does not answer in time, has no UniSMS key, or
@@ -174,26 +184,39 @@ export async function requestSmsSend(messageId: string): Promise<{ connected: bo
       .single();
     if (error || !row) return { connected: false };
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
-    try {
-      const response = await fetch(`${SMS_BACKEND_URL}/api/sms/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ phoneNumber: row.phone, message: row.body, messageId }),
-        signal: controller.signal,
-      });
-      if (response.ok) return { connected: true };
-      // UniSMS turning one message down - a number it will not text, say -
-      // comes back as a 4xx with the reason written on the message, and the
-      // link itself is fine. A refused login, a missing endpoint or any
-      // failure inside the backend means there is no working sender.
-      const refusedByProvider =
-        response.status >= 400 && response.status < 500 && ![401, 403, 404].includes(response.status);
-      return { connected: refusedByProvider };
-    } finally {
-      clearTimeout(timer);
+    for (let attempt = 0; attempt <= SEND_MAX_RETRIES; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+      try {
+        const response = await fetch(`${SMS_BACKEND_URL}/api/sms/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ phoneNumber: row.phone, message: row.body, messageId }),
+          signal: controller.signal,
+        });
+        if (response.ok) return { connected: true };
+
+        // Auth or routing errors are not transient — stop immediately.
+        if ([401, 403, 404].includes(response.status)) return { connected: false };
+
+        // A provider refusal (e.g. 422) is worth retrying: re-queue the row so
+        // the edge function can claim it again, wait briefly, and try once more.
+        if (attempt < SEND_MAX_RETRIES) {
+          await supabase
+            .from('sms_messages')
+            .update({ status: 'queued', provider_message_id: null, error: null })
+            .eq('id', messageId);
+          await new Promise((r) => setTimeout(r, SEND_RETRY_DELAY_MS));
+          continue;
+        }
+        // Final attempt also failed — the link itself is fine, just this
+        // message was refused by the provider.
+        return { connected: true };
+      } finally {
+        clearTimeout(timer);
+      }
     }
+    return { connected: false };
   } catch {
     return { connected: false };
   }
@@ -201,11 +224,10 @@ export async function requestSmsSend(messageId: string): Promise<{ connected: bo
 
 /**
  * The text a reporter gets when a responder accepts their report. Kept under
- * 160 characters so it goes out as one SMS, and it repeats the one thing that
- * must not be lost: a text is not a guarantee, so call 911 if in danger.
+ * 160 characters so it goes out as one SMS.
  */
 export const ACCEPTED_SMS =
-  'E-ksena: We received your emergency report and a responder is on the way. Stay somewhere safe and keep your phone on. If in immediate danger, call 911.';
+  'We received your emergency report and a responder is on the way. Stay somewhere safe and keep your phone on.';
 
 export type AcceptanceNotice = {
   /** How many people a text was queued for. One each, however many reports they filed. */

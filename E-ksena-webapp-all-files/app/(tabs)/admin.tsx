@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, ScrollView, Pressable, ActivityIndicator, StyleSheet, Linking } from 'react-native';
+import { View, Text, ScrollView, Pressable, ActivityIndicator, StyleSheet, Linking, Modal } from 'react-native';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/auth';
 import { useRoleTheme } from '@/context/role-theme';
 import { emergencyTypeLabel } from '@/lib/emergency';
 import { recordDispatchAction } from '@/lib/audit';
+import { notifyReportersAccepted } from '@/lib/sms-messages';
 import {
   INCIDENT_VIDEO_BUCKET,
   STORED_VIDEO_LIMIT,
@@ -51,10 +52,21 @@ type LinkedReport = {
   timestamp: string | null;
 };
 
+/** An active emergency report that can be dispatched to */
+type ActiveEmergency = {
+  report_id: string;
+  incident_id: string | null;
+  classified_as: string | null;
+  status: string | null;
+  timestamp: string | null;
+  content: string | null;
+};
+
 const RLS_HINT =
   ' Run supabase/admin-access.sql in the Supabase SQL Editor, then add this account to the admins table.';
 
 const VIDEO_SQL_HINT = ' Run supabase/admin-account-and-videos.sql in the Supabase SQL Editor.';
+const DISPATCH_SQL_HINT = ' Run supabase/admin-dispatch-responder.sql in the Supabase SQL Editor.';
 
 function formatWhen(ts: string | null): string {
   if (!ts) return 'No date';
@@ -81,6 +93,14 @@ export default function AdminScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
+
+  // Dispatch picker modal states
+  const [dispatchUnit, setDispatchUnit] = useState<ResponderRow | null>(null);
+  const [activeReports, setActiveReports] = useState<ActiveEmergency[]>([]);
+  const [reportsLoading, setReportsLoading] = useState(false);
+  const [dispatchError, setDispatchError] = useState<string | null>(null);
+  const [dispatchingReportId, setDispatchingReportId] = useState<string | null>(null);
+  const [dispatchSuccessNote, setDispatchSuccessNote] = useState<string | null>(null);
 
   const [videos, setVideos] = useState<StoredVideo[]>([]);
   const [reachedLimit, setReachedLimit] = useState(false);
@@ -141,6 +161,91 @@ export default function AdminScreen() {
 
     setLoading(false);
   }, []);
+
+  const openDispatchModal = async (responder: ResponderRow) => {
+    setDispatchUnit(responder);
+    setDispatchError(null);
+    setDispatchSuccessNote(null);
+    setReportsLoading(true);
+
+    try {
+      const { data, error } = await supabase
+        .from('reports')
+        .select('report_id, incident_id, classified_as, status, timestamp, content')
+        .neq('status', 'resolved')
+        .order('timestamp', { ascending: false })
+        .limit(50);
+
+      if (error) {
+        setDispatchError(error.message);
+      } else {
+        const raw = (data ?? []) as Record<string, unknown>[];
+        setActiveReports(
+          raw.map((r) => ({
+            report_id: String(r.report_id ?? ''),
+            incident_id: r.incident_id ? String(r.incident_id) : null,
+            classified_as: (r.classified_as as string | null) ?? null,
+            status: (r.status as string | null) ?? 'matched',
+            timestamp: (r.timestamp as string | null) ?? null,
+            content: (r.content as string | null) ?? null,
+          }))
+        );
+      }
+    } catch (err) {
+      setDispatchError(errorText(err));
+    } finally {
+      setReportsLoading(false);
+    }
+  };
+
+  const handleAssignDispatch = async (report: ActiveEmergency) => {
+    if (!dispatchUnit) return;
+    setDispatchingReportId(report.report_id);
+    setDispatchError(null);
+
+    try {
+      const { data, error } = await supabase.rpc('admin_dispatch_responder', {
+        report_ids: [report.report_id],
+        target_responder_id: dispatchUnit.responder_id,
+      });
+
+      if (error) {
+        setDispatchError(error.message + DISPATCH_SQL_HINT);
+        setDispatchingReportId(null);
+        return;
+      }
+
+      // Record in audit log
+      await recordDispatchAction(
+        {
+          action: 'status_change',
+          previousValue: report.status,
+          newValue: 'responding',
+          reportIds: [report.report_id],
+          detail: {
+            assigned_unit: dispatchUnit.name,
+            responder_id: dispatchUnit.responder_id,
+            service_type: dispatchUnit.service_type,
+            incident_id: report.incident_id,
+          },
+        },
+        { username: user?.username ?? accountEmail, role: 'admin' }
+      );
+
+      // Trigger SMS notification to reporter
+      notifyReportersAccepted([report.report_id]).catch(() => undefined);
+
+      setDispatchSuccessNote(`Successfully dispatched ${dispatchUnit.name ?? 'unit'} to emergency #${report.report_id}!`);
+      // Update local report status
+      setActiveReports((prev) =>
+        prev.map((r) => (r.report_id === report.report_id ? { ...r, status: 'responding' } : r))
+      );
+    } catch (err) {
+      setDispatchError(errorText(err));
+    } finally {
+      setDispatchingReportId(null);
+    }
+  };
 
   useEffect(() => {
     if (isAdmin) load();
@@ -276,17 +381,33 @@ export default function AdminScreen() {
                   {active ? 'Active' : 'Inactive'}
                 </Text>
               </View>
-              <Pressable
-                onPress={() => toggleActive(r)}
-                disabled={savingId === r.responder_id}
-                style={[styles.actionBtn, { borderColor: theme.primary }]}
-                accessibilityRole="button"
-                accessibilityLabel={`${active ? 'Deactivate' : 'Activate'} ${r.name ?? 'responder'}`}
-              >
-                <Text style={[styles.actionBtnText, { color: theme.primary }]}>
-                  {savingId === r.responder_id ? 'Saving…' : active ? 'Deactivate' : 'Activate'}
-                </Text>
-              </Pressable>
+              <View style={styles.buttonGroup}>
+                <Pressable
+                  onPress={() => openDispatchModal(r)}
+                  disabled={!active}
+                  style={[
+                    styles.actionBtn,
+                    styles.dispatchBtn,
+                    { borderColor: theme.primary, backgroundColor: active ? theme.primary : BORDER },
+                    !active && styles.dimmed,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Add ${r.name ?? 'responder'} as dispatch`}
+                >
+                  <Text style={[styles.actionBtnText, { color: WHITE }]}>Add as dispatch</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => toggleActive(r)}
+                  disabled={savingId === r.responder_id}
+                  style={[styles.actionBtn, { borderColor: theme.primary }]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${active ? 'Deactivate' : 'Activate'} ${r.name ?? 'responder'}`}
+                >
+                  <Text style={[styles.actionBtnText, { color: theme.primary }]}>
+                    {savingId === r.responder_id ? 'Saving…' : active ? 'Deactivate' : 'Activate'}
+                  </Text>
+                </Pressable>
+              </View>
             </View>
           </View>
         );
@@ -401,6 +522,128 @@ export default function AdminScreen() {
           </View>
         );
       })}
+
+      {/* Dispatch Picker Modal */}
+      <Modal
+        visible={dispatchUnit !== null}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setDispatchUnit(null)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, CardShadow]}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={styles.modalTitle}>Dispatch Responder Unit</Text>
+                <Text style={styles.modalSubtitle}>
+                  Assign <Text style={{ fontWeight: '700', color: theme.primary }}>{dispatchUnit?.name ?? 'Unit'}</Text> (
+                  {(dispatchUnit?.service_type ?? '').toUpperCase()}) to an active incident
+                </Text>
+              </View>
+              <Pressable onPress={() => setDispatchUnit(null)} style={styles.modalCloseBtn}>
+                <Text style={styles.modalCloseText}>✕</Text>
+              </Pressable>
+            </View>
+
+            {dispatchSuccessNote ? (
+              <View style={[styles.card, styles.okCard, { marginHorizontal: Spacing.md, marginTop: Spacing.sm }]}>
+                <Text style={styles.okText}>{dispatchSuccessNote}</Text>
+              </View>
+            ) : null}
+
+            {dispatchError ? (
+              <View style={[styles.card, styles.errorCard, { marginHorizontal: Spacing.md, marginTop: Spacing.sm }]}>
+                <Text style={styles.errorText}>{dispatchError}</Text>
+              </View>
+            ) : null}
+
+            <ScrollView style={styles.modalList} contentContainerStyle={{ padding: Spacing.md, gap: Spacing.sm }}>
+              {reportsLoading ? (
+                <ActivityIndicator size="large" color={theme.primary} style={{ marginVertical: Spacing.xl }} />
+              ) : activeReports.length === 0 ? (
+                <Text style={styles.emptyText}>No active or pending emergency reports found.</Text>
+              ) : (
+                activeReports.map((report) => {
+                  const isMatchingService =
+                    dispatchUnit?.service_type &&
+                    report.classified_as &&
+                    (report.classified_as.toLowerCase() === dispatchUnit.service_type.toLowerCase() ||
+                      (dispatchUnit.service_type === 'medical' && report.classified_as === 'accident') ||
+                      (dispatchUnit.service_type === 'police' && report.classified_as === 'violence'));
+
+                  const isBusy = dispatchingReportId === report.report_id;
+                  const isResponding = report.status === 'responding';
+
+                  return (
+                    <View
+                      key={report.report_id}
+                      style={[
+                        styles.modalReportCard,
+                        isMatchingService && { borderColor: theme.primary, borderWidth: 1.5 },
+                      ]}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, marginBottom: 2 }}>
+                          <Text style={styles.reportTypeTitle}>
+                            {emergencyTypeLabel(report.classified_as)}
+                          </Text>
+                          {isMatchingService ? (
+                            <View style={[styles.pill, { backgroundColor: SUCCESS_BG }]}>
+                              <Text style={[styles.pillText, { color: SUCCESS }]}>Recommended</Text>
+                            </View>
+                          ) : null}
+                          <View
+                            style={[
+                              styles.pill,
+                              { backgroundColor: isResponding ? '#FEF3C7' : '#FEE2E2' },
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.pillText,
+                                { color: isResponding ? '#92400E' : BRAND_RED },
+                              ]}
+                            >
+                              {report.status?.toUpperCase() ?? 'PENDING'}
+                            </Text>
+                          </View>
+                        </View>
+                        <Text style={styles.reportTimeText}>Reported: {formatWhen(report.timestamp)}</Text>
+                        {report.content ? (
+                          <Text style={styles.reportContentText} numberOfLines={2}>
+                            {report.content}
+                          </Text>
+                        ) : null}
+                      </View>
+
+                      <Pressable
+                        onPress={() => handleAssignDispatch(report)}
+                        disabled={isBusy}
+                        style={[
+                          styles.actionBtn,
+                          styles.confirmDispatchBtn,
+                          { backgroundColor: theme.primary, borderColor: theme.primary },
+                          isBusy && styles.dimmed,
+                        ]}
+                      >
+                        <Text style={[styles.actionBtnText, { color: WHITE }]}>
+                          {isBusy ? 'Assigning…' : 'Dispatch'}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  );
+                })
+              )}
+            </ScrollView>
+
+            <View style={styles.modalFooter}>
+              <Pressable onPress={() => setDispatchUnit(null)} style={styles.actionBtn}>
+                <Text style={[styles.actionBtnText, styles.cancelBtnText]}>Close</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -467,4 +710,55 @@ const styles = StyleSheet.create({
   noticeCard: { marginTop: Spacing.lg },
   noticeTitle: { fontSize: FontSizes.body, fontWeight: '600', color: TEXT_PRIMARY, marginBottom: Spacing.sm },
   noticeText: { fontSize: FontSizes.sm, color: TEXT_SECONDARY, marginBottom: Spacing.sm },
+  buttonGroup: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
+  dispatchBtn: { paddingHorizontal: Spacing.md },
+  confirmDispatchBtn: { paddingHorizontal: Spacing.md, marginLeft: Spacing.sm },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: Spacing.md,
+  },
+  modalContent: {
+    backgroundColor: WHITE,
+    borderRadius: Radius.lg,
+    width: '100%',
+    maxWidth: 680,
+    maxHeight: '85%',
+    overflow: 'hidden',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+  },
+  modalTitle: { fontSize: FontSizes.body, fontWeight: '700', color: TEXT_PRIMARY },
+  modalSubtitle: { fontSize: FontSizes.xs, color: TEXT_SECONDARY, marginTop: 2 },
+  modalCloseBtn: { padding: Spacing.xs },
+  modalCloseText: { fontSize: FontSizes.body, fontWeight: '700', color: TEXT_SECONDARY },
+  modalList: { flex: 1 },
+  modalReportCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: Spacing.md,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: WHITE,
+  },
+  reportTypeTitle: { fontSize: FontSizes.sm, fontWeight: '700', color: TEXT_PRIMARY },
+  reportTimeText: { fontSize: FontSizes.xs, color: TEXT_SECONDARY, marginVertical: 2 },
+  reportContentText: { fontSize: FontSizes.xs, color: TEXT_PRIMARY, marginTop: 2, fontStyle: 'italic' },
+  modalFooter: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    padding: Spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: BORDER,
+  },
 });

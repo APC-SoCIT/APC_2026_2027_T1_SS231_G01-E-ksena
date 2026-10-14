@@ -349,7 +349,9 @@ export function SmsMessenger() {
                   <Text style={[styles.bubbleMeta, message.status === 'failed' && styles.bubbleMetaFailed]}>
                     {smsClock(message.created_at)}
                     {outgoing ? ` · ${SMS_STATUS_LABELS[message.status] ?? message.status}` : ''}
-                    {message.status === 'failed' && message.error ? ` · ${message.error}` : ''}
+                    {message.status === 'failed' && message.error
+                      ? ` · ${/HTTP \d{3}/i.test(message.error) ? 'SMS provider declined' : message.error}`
+                      : ''}
                   </Text>
                 </View>
               </View>

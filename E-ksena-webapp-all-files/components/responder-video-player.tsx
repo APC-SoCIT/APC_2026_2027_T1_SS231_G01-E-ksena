@@ -15,15 +15,36 @@ import {
 const STUN_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
 ];
 
 /**
- * A TURN relay is optional. Without one a call only connects when the phone and this computer can
- * reach each other directly, which in practice means the same Wi-Fi or hotspot.
+ * Built-in open TURN relay fallback for multi-network calls (e.g. cellular data ↔ Wi-Fi/Office LAN).
+ * Allows traversing NAT and firewalls without requiring both devices to share the same hotspot/Wi-Fi.
+ */
+const DEFAULT_TURN_SERVERS: RTCIceServer[] = [
+  {
+    urls: [
+      'turn:openrelay.metered.ca:80',
+      'turn:openrelay.metered.ca:443',
+      'turn:openrelay.metered.ca:443?transport=tcp',
+      'turns:openrelay.metered.ca:443?transport=tcp',
+    ],
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+];
+
+/**
+ * Returns ICE servers including STUN and TURN relays.
+ * Prioritizes user-provided EXPO_PUBLIC_TURN_URL credentials from environment variables,
+ * and falls back to reliable open relay servers when none are set.
  */
 function iceServers(): RTCIceServer[] {
   const url = process.env.EXPO_PUBLIC_TURN_URL;
-  if (!url) return STUN_SERVERS;
+  if (!url) {
+    return [...STUN_SERVERS, ...DEFAULT_TURN_SERVERS];
+  }
   return [
     ...STUN_SERVERS,
     {
@@ -31,9 +52,10 @@ function iceServers(): RTCIceServer[] {
         .split(',')
         .map((u) => u.trim())
         .filter(Boolean),
-      username: process.env.EXPO_PUBLIC_TURN_USERNAME,
-      credential: process.env.EXPO_PUBLIC_TURN_CREDENTIAL,
+      username: process.env.EXPO_PUBLIC_TURN_USERNAME || undefined,
+      credential: process.env.EXPO_PUBLIC_TURN_CREDENTIAL || undefined,
     },
+    ...DEFAULT_TURN_SERVERS,
   ];
 }
 
@@ -166,9 +188,9 @@ export function ResponderVideoPlayer({
         return 'The call was offered, but the phone sent no network addresses. Ask the caller to end the call and start it again.';
       }
       if (!remoteTypes.has('relay') && !localTypes.has('relay')) {
-        return 'The phone and this computer could not reach each other. Put both on the same Wi-Fi or hotspot, then ask the caller to call again.';
+        return 'The call could not establish a direct peer or relay link. Ensure both mobile and web are connected to the internet and have TURN configured.';
       }
-      return 'The connection to the caller dropped. They may have lost signal.';
+      return 'The connection to the caller dropped. They may have lost signal or closed the app.';
     };
 
     // A one-line summary of the attempt, so a screenshot is enough to see where a call got stuck.
