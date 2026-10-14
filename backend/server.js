@@ -276,7 +276,7 @@ app.post('/api/report-incident', async (req, res) => {
     console.log(`[REPORT] Incident created: ${incident.incident_id}`);
 
     // ============================================
-    // AI Classification & Face-Blurring Pipeline
+    // Initial Dispatch & Service Type Selection
     // ============================================
     const validManualService = ['medical', 'police', 'fire'].includes(String(service_type).toLowerCase())
       ? String(service_type).toLowerCase()
@@ -284,93 +284,18 @@ app.post('/api/report-incident', async (req, res) => {
 
     let detectedService = validManualService || 'medical';
     let confidence = validManualService ? 1.0 : 0.85;
-    let finalVideoUrl = video_url || 'mock://video';
 
-    // Call Python AI Microservice whenever a valid video URL is provided to apply face blurring and emergency classification
-    if (video_url && typeof video_url === 'string' && video_url.startsWith('http')) {
-      try {
-        console.log(`[AI-BLUR] Sending video to AI Microservice for face-blurring and classification (incident: ${incident.incident_id})...`);
-        const aiUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5000';
-        const aiResponse = await fetch(`${aiUrl}/process-video`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ video_url: video_url })
-        });
+    // Set initial video status: if a raw video is uploaded, keep it private until blurred
+    const initialVideoPlaceholder = video_url && video_url.startsWith('http')
+      ? 'processing://blurring'
+      : (video_url || 'mock://video');
 
-        if (aiResponse.ok) {
-          const aiResult = await aiResponse.json();
-          if (aiResult.success) {
-            if (!validManualService && aiResult.detected_service_type) {
-              detectedService = aiResult.detected_service_type;
-              confidence = aiResult.confidence_score || 0.85;
-              console.log(`[AI] AI classified video as: ${detectedService} (Confidence: ${confidence})`);
-            }
-            console.log(`[AI-BLUR] Face blurring succeeded. Detected faces blurred: ${aiResult.faces_blurred ?? 0}`);
-
-            // Upload the blurred video binary to Supabase storage
-            if (aiResult.has_blurred_video && aiResult.blurred_video_base64) {
-              const blurredBuffer = Buffer.from(aiResult.blurred_video_base64, 'base64');
-              const blurredFileName = `blurred_${Date.now()}_${incident.incident_id.slice(0, 8)}.mp4`;
-
-              const { data: uploadData, error: uploadErr } = await supabase.storage
-                .from('incident-videos')
-                .upload(blurredFileName, blurredBuffer, {
-                  contentType: 'video/mp4',
-                  upsert: true
-                });
-
-              if (uploadErr) {
-                console.error('[AI-BLUR] Failed to upload blurred video to storage:', uploadErr);
-                return res.status(500).json({
-                  success: false,
-                  error: 'Face-blurring storage failed. Privacy policy prevents saving unblurred video.'
-                });
-              }
-
-              const { data: urlData } = supabase.storage.from('incident-videos').getPublicUrl(blurredFileName);
-              if (urlData?.publicUrl) {
-                finalVideoUrl = urlData.publicUrl;
-                console.log(`[AI-BLUR] Blurred video published: ${finalVideoUrl}`);
-
-                // Update incident record with the blurred video URL
-                await supabase
-                  .from('incidents')
-                  .update({ video_url: finalVideoUrl })
-                  .eq('incident_id', incident.incident_id);
-              }
-            }
-          } else {
-            console.error(`[AI-BLUR] AI service reported failure: ${aiResult.error}`);
-            return res.status(500).json({
-              success: false,
-              error: `Video face-blurring failed: ${aiResult.error || 'Processing error'}`
-            });
-          }
-        } else {
-          const errText = await aiResponse.text();
-          console.error(`[AI-BLUR] AI service returned HTTP ${aiResponse.status}: ${errText}`);
-          return res.status(502).json({
-            success: false,
-            error: 'AI face-blurring service is currently unavailable. Incident cannot be saved with unblurred video.'
-          });
-        }
-      } catch (aiMicroErr) {
-        console.error('[AI-BLUR] Exception communicating with AI Microservice:', aiMicroErr);
-        return res.status(500).json({
-          success: false,
-          error: `Face-blurring processing error: ${aiMicroErr.message}`
-        });
-      }
-    }
-
-    const { error: aiError } = await supabase.from('ai_analysis').insert({
-      incident_id: incident.incident_id,
-      detected_service_type: detectedService,
-      confidence_score: confidence
-    });
-
-    if (aiError) {
-      console.error('[ERROR] Failed to insert AI analysis row:', aiError);
+    // Update incident initially with the processing placeholder so unblurred footage is never exposed
+    if (initialVideoPlaceholder !== incident.video_url) {
+      await supabase
+        .from('incidents')
+        .update({ video_url: initialVideoPlaceholder })
+        .eq('incident_id', incident.incident_id);
     }
 
       // Find responders for the detected service type with their station coordinates
@@ -502,9 +427,9 @@ app.post('/api/report-incident', async (req, res) => {
             classified_as: detectedService,
             report_location_lat: lat,
             report_location_lng: lng,
-            video_path: finalVideoUrl || 'mock://video',
+            video_path: initialVideoPlaceholder || 'mock://video',
             bucket_id: 'incident-videos',
-            is_processed: true,
+            is_processed: false,
             status: 'pending',
             responder_username: assignedResponder.name || assignedResponder.responder_phone_number
           };
@@ -548,12 +473,97 @@ app.post('/api/report-incident', async (req, res) => {
 
       }
 
-    // Return incident payload once AI + dispatch work is queued/complete
+    // Return incident creation immediately so mobile app never times out
     res.json({
       success: true,
-      message: 'Emergency report received. AI analysis in progress...',
+      message: 'Emergency report received. AI analysis and face-blurring in progress...',
       incident_id: incident.incident_id
     });
+
+    // ============================================
+    // Background Processing: AI & Face-Blurring Pipeline
+    // ============================================
+    (async () => {
+      try {
+        let aiDetectedService = detectedService;
+        let aiConfidence = confidence;
+        let blurredVideoUrl = null;
+
+        if (video_url && typeof video_url === 'string' && video_url.startsWith('http')) {
+          console.log(`[AI-BLUR] [ASYNC] Processing video for incident ${incident.incident_id}...`);
+          const aiUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:5000';
+          const aiResponse = await fetch(`${aiUrl}/process-video`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ video_url: video_url })
+          });
+
+          if (aiResponse.ok) {
+            const aiResult = await aiResponse.json();
+            if (aiResult.success) {
+              if (!validManualService && aiResult.detected_service_type) {
+                aiDetectedService = aiResult.detected_service_type;
+                aiConfidence = aiResult.confidence_score || 0.85;
+                console.log(`[AI] [ASYNC] AI classified video as: ${aiDetectedService} (Confidence: ${aiConfidence})`);
+              }
+              console.log(`[AI-BLUR] [ASYNC] Face blurring succeeded. Detected faces blurred: ${aiResult.faces_blurred ?? 0}`);
+
+              if (aiResult.has_blurred_video && aiResult.blurred_video_base64) {
+                const blurredBuffer = Buffer.from(aiResult.blurred_video_base64, 'base64');
+                const blurredFileName = `blurred_${Date.now()}_${incident.incident_id.slice(0, 8)}.mp4`;
+
+                const { data: uploadData, error: uploadErr } = await supabase.storage
+                  .from('incident-videos')
+                  .upload(blurredFileName, blurredBuffer, {
+                    contentType: 'video/mp4',
+                    upsert: true
+                  });
+
+                if (uploadErr) {
+                  console.error('[AI-BLUR] [ASYNC] Failed to upload blurred video to storage:', uploadErr);
+                } else {
+                  const { data: urlData } = supabase.storage.from('incident-videos').getPublicUrl(blurredFileName);
+                  if (urlData?.publicUrl) {
+                    blurredVideoUrl = urlData.publicUrl;
+                    console.log(`[AI-BLUR] [ASYNC] Blurred video published: ${blurredVideoUrl}`);
+
+                    // Update incidents table with verified blurred video
+                    await supabase
+                      .from('incidents')
+                      .update({ video_url: blurredVideoUrl })
+                      .eq('incident_id', incident.incident_id);
+
+                    // Update reports table with verified blurred video
+                    await supabase
+                      .from('reports')
+                      .update({ video_path: blurredVideoUrl, is_processed: true })
+                      .eq('incident_id', incident.incident_id);
+                  }
+                }
+              }
+            } else {
+              console.error(`[AI-BLUR] [ASYNC] AI service reported failure: ${aiResult.error}. Raw unblurred video kept private.`);
+            }
+          } else {
+            const errText = await aiResponse.text();
+            console.error(`[AI-BLUR] [ASYNC] AI service HTTP ${aiResponse.status}: ${errText}. Raw unblurred video kept private.`);
+          }
+        }
+
+        // Insert AI analysis record
+        const { error: aiError } = await supabase.from('ai_analysis').insert({
+          incident_id: incident.incident_id,
+          detected_service_type: aiDetectedService,
+          confidence_score: aiConfidence
+        });
+
+        if (aiError) {
+          console.error('[AI] [ASYNC] Failed to insert AI analysis row:', aiError);
+        }
+      } catch (bgErr) {
+        console.error('[AI-BLUR] [ASYNC] Error in background AI pipeline:', bgErr);
+      }
+    })();
 
   } catch (error) {
     console.error('[ERROR] Error in /api/report-incident:', error);

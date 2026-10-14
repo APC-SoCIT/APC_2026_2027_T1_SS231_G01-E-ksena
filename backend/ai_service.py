@@ -62,8 +62,12 @@ def load_model():
         print(f"[AI SERVICE] [ERROR] Failed to load model ({WEIGHTS_PATH}): {e}", flush=True)
         model = None
 
-# Load model initially
-load_model()
+# Defer PyTorch model load so Gunicorn can bind to PORT immediately without timing out
+def ensure_model_loaded():
+    global model
+    if model is None:
+        load_model()
+    return model is not None
 
 # =======================================================
 # 3. FACE DETECTION & BLURRING PIPELINE
@@ -211,8 +215,7 @@ def health():
 @app.route('/process-video', methods=['POST'])
 @app.route('/analyze-video', methods=['POST'])
 def analyze_video():
-    if not model:
-        load_model() # Try loading again
+    ensure_model_loaded()
 
     data = request.json or {}
     video_url = data.get('video_url')
