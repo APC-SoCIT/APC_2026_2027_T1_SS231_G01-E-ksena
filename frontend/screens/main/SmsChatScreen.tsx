@@ -224,29 +224,6 @@ Sent via E-ksena`;
     await sendMessage(body, '/status');
   };
 
-  const handleCallCommand = () => {
-    Alert.alert(
-      'Emergency Call',
-      'Select how you would like to connect to the responder:',
-      [
-        {
-          text: 'Live Video Call',
-          onPress: () => {
-            (navigation as any).navigate('CallScreen', {
-              incidentId: incidentId || 'direct-emergency',
-              responderPhone,
-            });
-          },
-        },
-        {
-          text: 'Cellular Phone Call',
-          onPress: () => Linking.openURL(`tel:${responderPhone}`),
-        },
-        { text: 'Cancel', style: 'cancel' },
-      ]
-    );
-  };
-
   const handleSendCustomText = async () => {
     if (!inputText.trim()) return;
     const textToSend = inputText.trim();
@@ -256,8 +233,6 @@ Sent via E-ksena`;
       await handleReportCommand();
     } else if (textToSend.toLowerCase() === '/status') {
       await handleStatusCommand();
-    } else if (textToSend.toLowerCase() === '/call') {
-      handleCallCommand();
     } else {
       await sendMessage(textToSend);
     }
@@ -279,10 +254,6 @@ Sent via E-ksena`;
             {responderPhone ? `${responderPhone} • SMS Active` : 'Emergency Dispatch • SMS Active'}
           </Text>
         </View>
-
-        <TouchableOpacity style={styles.callIconBtn} onPress={handleCallCommand}>
-          <Phone size={20} color="#ffffff" />
-        </TouchableOpacity>
       </View>
 
       <KeyboardAvoidingView
@@ -366,16 +337,6 @@ Sent via E-ksena`;
               <View style={styles.commandLeft}>
                 <Clock size={20} color="#f59e0b" style={styles.commandIcon} />
                 <Text style={styles.commandLabel}>Check Responder Arrival Status</Text>
-              </View>
-            </TouchableOpacity>
-
-            <View style={styles.commandDivider} />
-
-            {/* Button 3: Live emergency call */}
-            <TouchableOpacity style={styles.commandRow} onPress={handleCallCommand}>
-              <View style={styles.commandLeft}>
-                <Phone size={20} color="#10b981" style={styles.commandIcon} />
-                <Text style={styles.commandLabel}>Live Emergency Call</Text>
               </View>
             </TouchableOpacity>
           </View>

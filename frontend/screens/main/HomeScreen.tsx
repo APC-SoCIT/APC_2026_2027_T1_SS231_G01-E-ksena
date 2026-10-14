@@ -379,12 +379,10 @@ const HomeScreen: React.FC = () => {
   };
 
   const handleCallResponder = () => {
-    if (responderData?.dispatcherPhone) {
-      (navigation as any).navigate('CallScreen', {
-        incidentId: responderData.incidentId,
-        responderPhone: responderData.dispatcherPhone
-      });
-    }
+    (navigation as any).navigate('CallScreen', {
+      incidentId: responderData?.incidentId || 'active-emergency',
+      responderPhone: responderData?.dispatcherPhone || ''
+    });
   };
 
   const userCoordinate: [number, number] = [
