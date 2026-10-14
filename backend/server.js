@@ -63,23 +63,29 @@ const getOrCreateReporterUser = async (phoneNumber, candidateUserId) => {
   if (candidateUserId) {
     const { data: userById } = await supabase
       .from('users')
-      .select('user_id')
+      .select('user_id, user_phone_number')
       .eq('user_id', candidateUserId)
       .maybeSingle();
 
     if (userById?.user_id) {
-      return userById.user_id;
+      return {
+        userId: userById.user_id,
+        phone: userById.user_phone_number || normalizedPhone || 'unknown'
+      };
     }
 
     // 2. Check if candidateUserId is an auth_user_id (Supabase Auth UID)
     const { data: userByAuthId } = await supabase
       .from('users')
-      .select('user_id')
+      .select('user_id, user_phone_number')
       .eq('auth_user_id', candidateUserId)
       .maybeSingle();
 
     if (userByAuthId?.user_id) {
-      return userByAuthId.user_id;
+      return {
+        userId: userByAuthId.user_id,
+        phone: userByAuthId.user_phone_number || normalizedPhone || 'unknown'
+      };
     }
   }
 
@@ -87,24 +93,30 @@ const getOrCreateReporterUser = async (phoneNumber, candidateUserId) => {
   if (normalizedPhone && normalizedPhone !== 'unknown') {
     const { data: existingUser } = await supabase
       .from('users')
-      .select('user_id')
+      .select('user_id, user_phone_number')
       .eq('user_phone_number', normalizedPhone)
       .maybeSingle();
 
     if (existingUser?.user_id) {
-      return existingUser.user_id;
+      return {
+        userId: existingUser.user_id,
+        phone: existingUser.user_phone_number
+      };
     }
   }
 
   // 4. Fallback: query default 'unknown' reporter user
   const { data: defaultUser } = await supabase
     .from('users')
-    .select('user_id')
+    .select('user_id, user_phone_number')
     .eq('user_phone_number', 'unknown')
     .maybeSingle();
 
   if (defaultUser?.user_id) {
-    return defaultUser.user_id;
+    return {
+      userId: defaultUser.user_id,
+      phone: defaultUser.user_phone_number || normalizedPhone || 'unknown'
+    };
   }
 
   // 5. If not found, create new reporter row
@@ -116,17 +128,25 @@ const getOrCreateReporterUser = async (phoneNumber, candidateUserId) => {
       full_name: null,
       email: null
     })
-    .select('user_id')
+    .select('user_id, user_phone_number')
     .single();
 
   if (insertError) {
     // If insert failed due to concurrent race, fetch whatever is there
-    const { data: raceUser } = await supabase.from('users').select('user_id').limit(1).single();
-    if (raceUser?.user_id) return raceUser.user_id;
+    const { data: raceUser } = await supabase.from('users').select('user_id, user_phone_number').limit(1).single();
+    if (raceUser?.user_id) {
+      return {
+        userId: raceUser.user_id,
+        phone: raceUser.user_phone_number || normalizedPhone || 'unknown'
+      };
+    }
     throw insertError;
   }
 
-  return createdUser.user_id;
+  return {
+    userId: createdUser.user_id,
+    phone: createdUser.user_phone_number || normalizedPhone || 'unknown'
+  };
 };
 
 // ============================================
@@ -198,7 +218,11 @@ app.post('/api/report-incident', async (req, res) => {
 
     console.log(`[REPORT] New incident reported by ${user_phone_number} at ${lat}, ${lng} (service: ${service_type || 'auto'})`);
 
-    const reporterUserId = await getOrCreateReporterUser(user_phone_number, user_id);
+    const reporterUser = await getOrCreateReporterUser(user_phone_number, user_id);
+    const reporterUserId = reporterUser.userId;
+    const finalReporterPhone = (user_phone_number && user_phone_number !== 'unknown' && user_phone_number !== '+639123456789')
+      ? user_phone_number
+      : (reporterUser.phone || user_phone_number);
 
     // Resolve location_address: if null/empty, reverse geocode or use GPS coordinate string fallback
     let resolvedAddress = location_address && String(location_address).trim() ? String(location_address).trim() : null;
@@ -232,7 +256,7 @@ app.post('/api/report-incident', async (req, res) => {
       .from('incidents')
       .insert({
         user_id: reporterUserId,
-        user_phone_number: user_phone_number,
+        user_phone_number: finalReporterPhone,
         incident_location_lat: lat,
         incident_location_lng: lng,
         location_address: resolvedAddress,
@@ -419,26 +443,51 @@ app.post('/api/report-incident', async (req, res) => {
 
         // --- NEW: Sync to legacy 'reports' table for the Web App ---
         try {
-          const { error: reportError } = await supabase
-            .from('reports')
-            .insert({
-              user_id: reporterUserId,
-              incident_id: incident.incident_id,
-              content: resolvedAddress || 'Emergency Report',
-              classified_as: detectedService,
-              report_location_lat: lat,
-              report_location_lng: lng,
-              video_path: video_url || 'mock://video',
-              bucket_id: 'incident-videos',
-              is_processed: true,
-              status: 'pending',
-              responder_username: assignedResponder.name || assignedResponder.responder_phone_number
-            });
+          const reportPayload = {
+            user_id: reporterUserId,
+            incident_id: incident.incident_id,
+            content: resolvedAddress || 'Emergency Report',
+            classified_as: detectedService,
+            report_location_lat: lat,
+            report_location_lng: lng,
+            video_path: video_url || 'mock://video',
+            bucket_id: 'incident-videos',
+            is_processed: true,
+            status: 'pending',
+            responder_username: assignedResponder.name || assignedResponder.responder_phone_number
+          };
 
-          if (reportError) {
-            console.error('[ERROR] Failed to sync to reports table:', reportError);
+          const { data: existingReport } = await supabase
+            .from('reports')
+            .select('report_id')
+            .eq('incident_id', incident.incident_id)
+            .maybeSingle();
+
+          if (existingReport?.report_id) {
+            const { error: updateError } = await supabase
+              .from('reports')
+              .update(reportPayload)
+              .eq('report_id', existingReport.report_id);
+
+            if (updateError) {
+              console.warn('[WARNING] Failed to update existing reports record:', updateError.message);
+            } else {
+              console.log(`[SUCCESS] Updated existing reports record ${existingReport.report_id} for incident ${incident.incident_id}`);
+            }
           } else {
-            console.log(`[SUCCESS] Synced incident ${incident.incident_id} to legacy reports table`);
+            const { error: reportError } = await supabase
+              .from('reports')
+              .insert(reportPayload);
+
+            if (reportError) {
+              if (reportError.code === '23505') {
+                console.log(`[INFO] Report row already created for incident ${incident.incident_id} (duplicate prevented).`);
+              } else {
+                console.error('[ERROR] Failed to sync to reports table:', reportError);
+              }
+            } else {
+              console.log(`[SUCCESS] Synced incident ${incident.incident_id} to legacy reports table`);
+            }
           }
         } catch (err) {
           console.error('[ERROR] Exception syncing to reports table:', err);
@@ -518,9 +567,9 @@ app.get('/api/incident/:incidentId', async (req, res) => {
 
         // Set dispatcher info
         assignedDispatcher = {
-          id: responder.responder_phone_number,
+          id: responder.responder_id,
           name: responder.name || `${responder.service_type} Responder`,
-          phone: responder.responder_phone_number,
+          phone: responder.responder_phone_number || '',
         };
         console.log(`[DEBUG] Assigned dispatcher:`, assignedDispatcher);
 
@@ -902,25 +951,25 @@ app.post('/api/chat/reply', requireAuth, async (req, res) => {
     const trimmedMessage = message.trim();
     const authUser = req.user;
 
-    // 1. Resolve citizen phone number securely (never trust user input directly)
+    // 1. Resolve citizen phone number securely
     let citizenPhone = authUser?.phone || authUser?.user_metadata?.phone;
 
     if (!citizenPhone && authUser?.id) {
-      // Lookup in users table if phone wasn't in auth metadata
+      // Lookup in users table: authUser.id is the Supabase Auth UID (auth_user_id)
       const { data: dbUser } = await supabase
         .from('users')
         .select('user_phone_number')
-        .eq('user_id', authUser.id)
+        .or(`auth_user_id.eq.${authUser.id},user_id.eq.${authUser.id}${authUser.email ? `,email.eq.${authUser.email}` : ''}`)
         .maybeSingle();
 
-      if (dbUser?.user_phone_number) {
+      if (dbUser?.user_phone_number && dbUser.user_phone_number !== 'unknown') {
         citizenPhone = dbUser.user_phone_number;
       }
     }
 
-    const normalizedPhone = normalizePhilippinePhone(citizenPhone);
+    const normalizedPhone = normalizePhilippinePhone(citizenPhone) || (citizenPhone && citizenPhone !== 'unknown' ? citizenPhone : null);
     if (!normalizedPhone) {
-      console.warn('[CHAT REPLY] ⚠️ User has no valid phone registered:', authUser?.id);
+      console.warn('[CHAT REPLY] ⚠️ User has no valid phone registered:', authUser?.id, authUser?.email);
       return res.status(400).json({
         success: false,
         error: 'Unable to send reply: Citizen does not have a registered phone number.'
