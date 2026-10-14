@@ -37,6 +37,7 @@ import { GOOGLE_MAPS_API_KEY } from '@/lib/env';
 import { PrimaryButton } from '@/components/primary-button';
 import { recordDispatchAction } from '@/lib/audit';
 import { notifyReportersAccepted, type AcceptanceNotice } from '@/lib/sms-messages';
+import { startTrip, setTripStatus, shareTripPosition, SHARE_EVERY_MS, SHARE_MIN_MOVE_KM } from '@/lib/dispatch';
 import { ResponderVideoPlayer } from '@/components/responder-video-player';
 import { ReporterDetails } from '@/components/reporter-details';
 import { publicVideoUrl } from '@/lib/incident-video';
@@ -134,6 +135,12 @@ export default function MapScreen() {
   // What happened to the texts sent to the reporters of the card just accepted.
   const [reporterNote, setReporterNote] = useState<{ groupKey: string; text: string } | null>(null);
   const statusBusy = useRef(false);
+  // Live tracking: what the reporter's app is being told about this trip.
+  const [tripNote, setTripNote] = useState<{ groupKey: string; text: string } | null>(null);
+  const [arrivedKeys, setArrivedKeys] = useState<string[]>([]);
+  const [shareProblem, setShareProblem] = useState<string | null>(null);
+  const [tripsStarted, setTripsStarted] = useState(0);
+  const lastShared = useRef<{ lat: number; lng: number; at: number } | null>(null);
   const geocoderRef = useRef<google.maps.Geocoder | null>(null);
 
   const mapHeight = 640;
@@ -317,6 +324,23 @@ export default function MapScreen() {
 
   }, [responderLocation?.lat, responderLocation?.lng]);
 
+  // While an accepted emergency is on the list, the responder's position is
+  // written to their trip as they move, so the reporter's app can follow it.
+  // The database writes it only to trips that are this responder's and still
+  // under way, so a position sent with none open changes nothing.
+  const tripUnderway = reports.some((r) => r.status === 'responding');
+  useEffect(() => {
+    if (!tripUnderway || !responderLocation) return;
+    const now = Date.now();
+    const last = lastShared.current;
+    if (last) {
+      if (now - last.at < SHARE_EVERY_MS) return;
+      if (haversineKm(last.lat, last.lng, responderLocation.lat, responderLocation.lng) < SHARE_MIN_MOVE_KM) return;
+    }
+    lastShared.current = { ...responderLocation, at: now };
+    shareTripPosition(responderLocation.lat, responderLocation.lng).then(setShareProblem);
+  }, [tripUnderway, responderLocation, tripsStarted]);
+
   useEffect(() => {
     if (!selectedReport || !isLoaded || addressCache[selectedReport.id]) return;
     if (typeof google === 'undefined') return;
@@ -399,11 +423,35 @@ export default function MapScreen() {
       setStatusError(`Status saved, but it was not recorded in the audit log: ${auditError}`);
     }
 
-    if (action.next === 'resolved') {
+    // Done ends the trip on the dispatch row as well, which is what tells the
+    // reporter's app the responder has finished. Waited for, so that if it
+    // fails the card stays up to say so instead of vanishing.
+    const tripError = action.next === 'resolved' ? await setTripStatus(ids, 'resolved') : null;
+
+    if (action.next === 'resolved' && !tripError) {
       setReports((prev) => prev.filter((r) => !ids.includes(r.id)));
       setSelectedId(null);
     } else {
       setReports((prev) => prev.map((r) => (ids.includes(r.id) ? { ...r, status: action.next } : r)));
+    }
+    if (tripError) {
+      setStatusError(`Marked done, but the reporter's app was not told: ${tripError}`);
+    }
+
+    // Accepting makes this the responder's trip on the dispatch row, so the
+    // reporter's app can follow them there. Not waited for, like the texts.
+    if (action.next === 'responding') {
+      setTripNote(null);
+      startTrip(ids).then((error) => {
+        if (error) {
+          setTripNote({ groupKey: group.key, text: `Accepted, but the reporter's app cannot follow you yet: ${error}` });
+          return;
+        }
+        // Send the current position straight away rather than at the next
+        // move: the app should not show an empty map until the car turns.
+        lastShared.current = null;
+        setTripsStarted((count) => count + 1);
+      });
     }
 
     // Accepting answers every caller behind the card, so each of them is told,
@@ -424,6 +472,38 @@ export default function MapScreen() {
           setReporterNote({ groupKey: group.key, text: `The reporters could not be texted: ${reason}` });
         }
       );
+    }
+  };
+
+  // Arrived is for the reporter's app, which shows it. The report itself stays
+  // "responding" until Done.
+  const handleArrived = async (group: ReportGroup<EmergencyReport>) => {
+    if (statusBusy.current) return;
+    statusBusy.current = true;
+    setStatusError(null);
+    const ids = group.members.map((m) => m.id);
+    try {
+      const error = await setTripStatus(ids, 'arrived');
+      if (error) {
+        setStatusError(`Could not mark your arrival: ${error}`);
+        return;
+      }
+      setArrivedKeys((prev) => (prev.includes(group.key) ? prev : [...prev, group.key]));
+      const auditError = await recordDispatchAction(
+        {
+          action: 'status_change',
+          previousValue: 'responding',
+          newValue: 'arrived',
+          reportIds: ids,
+          detail: { incident_id: group.lead.incidentId, grouped_reports: ids.length },
+        },
+        { username: user?.username, role: user?.role }
+      );
+      if (auditError) {
+        setStatusError(`Arrival marked, but it was not recorded in the audit log: ${auditError}`);
+      }
+    } finally {
+      statusBusy.current = false;
     }
   };
 
@@ -721,7 +801,14 @@ export default function MapScreen() {
             </Text>
           ) : null}
           {selectedReport.status === 'responding' ? (
-            <Text style={styles.hintText}>Tracking your live location as you head to the scene.</Text>
+            <Text style={styles.hintText}>
+              {shareProblem
+                ? `Tracking your location here, but the reporter's app is not getting it: ${shareProblem}`
+                : "Sharing your live location with the reporter's app as you head to the scene."}
+            </Text>
+          ) : null}
+          {tripNote && tripNote.groupKey === selectedGroup?.key ? (
+            <Text style={styles.statusErrorText}>{tripNote.text}</Text>
           ) : null}
           {reporterNote && reporterNote.groupKey === selectedGroup?.key ? (
             <Text style={styles.hintText}>{reporterNote.text}</Text>
@@ -740,12 +827,28 @@ export default function MapScreen() {
 
           {statusError ? <Text style={styles.statusErrorText}>{statusError}</Text> : null}
           {!selectedReport.outsideArea && nextStatusAction(selectedReport.status) ? (
-            <Pressable
-              onPress={() => selectedGroup && handleStatusAction(selectedGroup)}
-              style={[styles.statusBtn, { backgroundColor: theme.primary }]}
-            >
-              <Text style={styles.statusBtnText}>{nextStatusAction(selectedReport.status)?.label}</Text>
-            </Pressable>
+            <View style={styles.statusActions}>
+              {selectedReport.status === 'responding' && selectedGroup ? (
+                arrivedKeys.includes(selectedGroup.key) ? (
+                  <Text style={styles.arrivedText}>Arrived. The reporter&apos;s app shows it.</Text>
+                ) : (
+                  <Pressable
+                    onPress={() => handleArrived(selectedGroup)}
+                    style={[styles.statusBtn, styles.statusBtnOutline, { borderColor: theme.primary }]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Mark that you have arrived at the scene"
+                  >
+                    <Text style={[styles.statusBtnText, { color: theme.primary }]}>Arrived</Text>
+                  </Pressable>
+                )
+              ) : null}
+              <Pressable
+                onPress={() => selectedGroup && handleStatusAction(selectedGroup)}
+                style={[styles.statusBtn, { backgroundColor: theme.primary }]}
+              >
+                <Text style={styles.statusBtnText}>{nextStatusAction(selectedReport.status)?.label}</Text>
+              </Pressable>
+            </View>
           ) : null}
         </>
       )}
@@ -908,6 +1011,22 @@ const styles = StyleSheet.create({
     fontSize: FontSizes.xs,
     fontWeight: '600',
     color: SUCCESS,
+  },
+  statusActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
+  },
+  statusBtnOutline: {
+    borderWidth: 1,
+    backgroundColor: WHITE,
+  },
+  arrivedText: {
+    marginTop: Spacing.sm,
+    fontSize: FontSizes.sm,
+    fontWeight: '600',
+    color: TEXT_SECONDARY,
   },
   statusBtn: {
     marginTop: Spacing.sm,

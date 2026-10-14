@@ -172,7 +172,7 @@ export const PRIVACY_DOCUMENT: LegalDocumentContent = {
         'Your name, username, email address and mobile number.',
         'Your service, rank, office and station address.',
         'A record of the dispatch actions you take: accepting, reassigning and resolving incidents.',
-        'Your location while you are navigating to a scene, so the system can show your route and estimated arrival.',
+        'Your location while you are on your way to a scene, so the system can show your route and estimated arrival to you and to the person who reported the emergency. It is shared from the moment you accept until you mark the emergency done.',
       ],
     },
     {
