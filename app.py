@@ -2,14 +2,28 @@ import os
 import tempfile
 import urllib.request
 from datetime import datetime, timezone
+import cv2
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import uvicorn
+import cv2
+import mediapipe as mp
+
+
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Header
 from pydantic import BaseModel
 from supabase import create_client, Client
 
 app = FastAPI()
 
-# Supports both lowercase and uppercase environment variables
+
+FRONTAL_CASCADE = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+PROFILE_CASCADE = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
+
+
+# --- 1. Environment & Supabase Setup ---
 SUPABASE_URL = os.environ.get("supabase_url") or os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("supabase_key") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 HF_WEBHOOK_SECRET = os.environ.get("HF_WEBHOOK_SECRET")
@@ -18,34 +32,165 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     raise RuntimeError("Missing Supabase credentials in environment variables/secrets.")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-MODEL_VERSION = "emergency-classifier-v1"
+
+# --- 2. 3D-CNN Model Configuration & Architecture ---
+IMG_SIZE = (112, 112)
+NUM_FRAMES = 16
+LABEL_NAMES = ["Fire", "Police", "Medical"]
+MODEL_VERSION = "emergency_ai3"
+MODEL_WEIGHTS_PATH = "emergency_ai3.pth"
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+class EmergencyModel(nn.Module):
+    def __init__(self):
+        super(EmergencyModel, self).__init__()
+        self.conv1 = nn.Conv3d(3, 16, kernel_size=3, padding=1)
+        self.pool = nn.MaxPool3d(2)
+        self.conv2 = nn.Conv3d(16, 32, kernel_size=3, padding=1)
+        self.flatten = nn.Flatten()
+        self.fc1 = nn.Linear(32 * 4 * 28 * 28, 64)
+        self.fc2 = nn.Linear(64, 3)
+
+    def forward(self, x):
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = self.flatten(x)
+        x = F.relu(self.fc1(x))
+        return self.fc2(x)
+
+# Load model globally on startup
+model = EmergencyModel().to(device)
+if os.path.exists(MODEL_WEIGHTS_PATH):
+    model.load_state_dict(torch.load(MODEL_WEIGHTS_PATH, map_location=device))
+    model.eval()
+    print(f"Loaded {MODEL_WEIGHTS_PATH} on {device}")
+else:
+    model.eval()
+    print(f"Warning: {MODEL_WEIGHTS_PATH} not found. Running with initialized weights.")
+
+# Load OpenCV built-in Haar Cascade face detector
+FACE_CASCADE = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+)
 
 
 class VideoPayload(BaseModel):
     video_url: str = ""
-    file_path: str = ""  # e.g., "incident-123.mp4"
-    incident_id: str     # maps to UUID in ai_analysis table
+    file_path: str = ""
+    incident_id: str
 
 
+# --- 3. Implementation 2: Full Video Face Blurring ---
+def anonymize_video_file(input_path: str, output_path: str, detect_every_n: int = 4):
+    """
+    Reads an input MP4, detects frontal and side-profile faces across frames,
+    blurs all matches, and writes the anonymized video to output_path.
+    """
+    cap = cv2.VideoCapture(input_path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+    cached_faces = []
+    frame_idx = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Detect faces every Nth frame to keep CPU processing fast
+        if frame_idx % detect_every_n == 0:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            
+            # 1. Detect frontal faces
+            frontal = FRONTAL_CASCADE.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+            
+            # 2. Detect side-view profile faces (normal orientation)
+            profile1 = PROFILE_CASCADE.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+            
+            # 3. Detect side-view profile faces (flipped orientation for opposite direction profiles)
+            gray_flipped = cv2.flip(gray, 1)
+            profile2 = PROFILE_CASCADE.detectMultiScale(gray_flipped, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+            
+            # Adjust flipped profile coordinates back to original frame layout
+            fixed_profile2 = []
+            for (x, y, w, h) in profile2:
+                orig_x = width - x - w
+                fixed_profile2.append((orig_x, y, w, h))
+
+            # Combine all detections
+            cached_faces = list(frontal) + list(profile1) + list(fixed_profile2)
+
+        # Blur each detected face region with 15% padding
+        for (x, y, w, h) in cached_faces:
+            pad_w, pad_h = int(w * 0.15), int(h * 0.15)
+            x1, y1 = max(0, x - pad_w), max(0, y - pad_h)
+            x2, y2 = min(width, x + w + pad_w), min(height, y + h + pad_h)
+
+            roi = frame[y1:y2, x1:x2]
+            if roi.size != 0:
+                kw = max(15, ((x2 - x1) // 3) | 1)
+                kh = max(15, ((y2 - y1) // 3) | 1)
+                frame[y1:y2, x1:x2] = cv2.GaussianBlur(roi, (kw, kh), 30)
+
+        out.write(frame)
+        frame_idx += 1
+
+    cap.release()
+    out.release()
+
+
+# --- 4. 3D-CNN Video Preprocessing & Inference ---
 def run_model_inference(local_video_path: str) -> tuple[str, float]:
-    """
-    Your actual video classification logic (e.g., PyTorch 3D-CNN, Video Transformer).
-    Returns (predicted_service_type, confidence_score).
-    Classes: 'fire', 'medical', 'police'
-    """
-    # Replace this placeholder with your real model inference:
-    predicted_service_type = "fire"
-    confidence_score = 0.96
-    return predicted_service_type, confidence_score
+    """Samples 16 frames from the video and runs the 3D-CNN classifier."""
+    cap = cv2.VideoCapture(local_video_path)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    indices = np.linspace(0, max(0, total - 1), NUM_FRAMES, dtype=int)
+
+    video_frames = []
+    for i in indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+        ret, frame = cap.read()
+        if ret:
+            frame = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), IMG_SIZE)
+            video_frames.append(frame)
+        else:
+            video_frames.append(np.zeros((*IMG_SIZE, 3), dtype=np.uint8))
+    cap.release()
+
+    frames_np = np.array(video_frames)
+    tensor = torch.from_numpy(frames_np).float() / 255.0
+    # Permute from (T, H, W, C) to (C, T, H, W) and add batch dimension (1, C, T, H, W)
+    tensor = tensor.permute(3, 0, 1, 2).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        outputs = model(tensor)
+        probs = F.softmax(outputs, dim=1)
+        confidence, pred_idx = torch.max(probs, dim=1)
+
+    predicted_label = LABEL_NAMES[pred_idx.item()].lower()
+    return predicted_label, round(float(confidence.item()), 4)
 
 
+# --- 5. Background Pipeline Worker ---
 def process_single_incident(incident_id: str, file_path: str = "", video_url: str = ""):
-    """Classifies a video and inserts results into ai_analysis."""
+    """Downloads video, runs 3D-CNN, blurs faces, updates storage, and writes to ai_analysis."""
     try:
-        # 1. Obtain signed URL if direct URL was not provided
+        # Avoid duplicate processing if incident_id already exists in ai_analysis
+        existing = supabase.table("ai_analysis").select("id").eq("incident_id", incident_id).execute()
+        if existing.data:
+            print(f"[SKIP] Incident {incident_id} is already classified.")
+            return
+
+        # 1. Get Signed URL from 'incident-videos' if not provided
         if not video_url and file_path:
             signed_res = supabase.storage.from_("incident-videos").create_signed_url(file_path, 900)
-            if "signedUrl" in signed_res:
+            if isinstance(signed_res, dict) and "signedUrl" in signed_res:
                 video_url = signed_res["signedUrl"]
             elif isinstance(signed_res, dict) and "signedURL" in signed_res:
                 video_url = signed_res["signedURL"]
@@ -55,42 +200,52 @@ def process_single_incident(incident_id: str, file_path: str = "", video_url: st
         if not video_url:
             raise ValueError(f"No video URL or file path provided for incident {incident_id}")
 
-        # 2. Download video to temporary storage
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=True) as temp_video:
-            urllib.request.urlretrieve(video_url, temp_video.name)
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=True) as raw_video, \
+             tempfile.NamedTemporaryFile(suffix=".mp4", delete=True) as blurred_video:
 
-            # 3. Run model classification
-            detected_type, confidence = run_model_inference(temp_video.name)
+            # 2. Download original video from Supabase Storage
+            urllib.request.urlretrieve(video_url, raw_video.name)
 
-        # 4. Insert into the ai_analysis table matching your schema
+            # 3. Classify video with 3D-CNN
+            detected_type, confidence = run_model_inference(raw_video.name)
+
+            # 4. Blur faces across the entire video (Implementation 2)
+            if file_path:
+                print(f"[PRIVACY] Blurring faces in {file_path}...")
+                anonymize_video_file(raw_video.name, blurred_video.name)
+
+                # 5. Overwrite original unblurred video in Supabase Storage
+                with open(blurred_video.name, "rb") as f:
+                    supabase.storage.from_("incident-videos").upload(
+                        path=file_path,
+                        file=f,
+                        file_options={"content-type": "video/mp4", "upsert": "true"}
+                    )
+                print(f"[PRIVACY] Uploaded anonymized video to incident-videos/{file_path}")
+
+        # 6. Insert classification result into ai_analysis
         analysis_record = {
             "incident_id": incident_id,
             "model_version": MODEL_VERSION,
             "service_type": detected_type,
             "detected_service_type": detected_type,
-            "confidence_score": float(confidence),
+            "confidence_score": confidence,
             "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
         supabase.table("ai_analysis").insert(analysis_record).execute()
-        print(f"[SUCCESS] Classified incident {incident_id} as {detected_type} ({confidence})")
+        print(f"[SUCCESS] Incident {incident_id} -> {detected_type} ({confidence})")
 
     except Exception as e:
         print(f"[ERROR] Failed processing incident {incident_id}: {str(e)}")
 
 
 def process_all_unclassified_videos():
-    """
-    Finds incidents from the bucket or table that do not have
-    an entry in ai_analysis yet, and runs inference on them.
-    """
+    """Finds any video in incident-videos not yet recorded in ai_analysis and processes it."""
     try:
-        # Step A: Get all incident_ids already processed
         analyzed_resp = supabase.table("ai_analysis").select("incident_id").execute()
         analyzed_ids = {row["incident_id"] for row in analyzed_resp.data if row.get("incident_id")}
 
-        # Step B: Get files from the 'incident-videos' bucket
-        # Note: adjust limit if you have more than 100 videos
         files = supabase.storage.from_("incident-videos").list(limit=100)
 
         for file_obj in files:
@@ -98,10 +253,7 @@ def process_all_unclassified_videos():
             if not file_name or file_name.startswith("."):
                 continue
 
-            # Assume file name without extension matches incident_id (e.g. "<uuid>.mp4")
-            # If your file name is stored in another table, query that table instead.
             incident_id = os.path.splitext(file_name)[0]
-
             if incident_id not in analyzed_ids:
                 print(f"[QUEUE] Processing unanalyzed video: {file_name}")
                 process_single_incident(incident_id=incident_id, file_path=file_name)
@@ -112,7 +264,7 @@ def process_all_unclassified_videos():
 
 @app.get("/")
 def health_check():
-    return {"status": "ok", "message": "Emergency Classifier API is active"}
+    return {"status": "ok", "message": "Emergency Classifier & Face Anonymizer API is active"}
 
 
 @app.post("/classify-emergency", status_code=202)
@@ -121,7 +273,6 @@ async def classify_emergency(
     background_tasks: BackgroundTasks,
     authorization: str = Header(None)
 ):
-    """Triggered per incident from Supabase Edge Function or Webhook."""
     if HF_WEBHOOK_SECRET and authorization != f"Bearer {HF_WEBHOOK_SECRET}":
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -131,7 +282,7 @@ async def classify_emergency(
         file_path=payload.file_path,
         video_url=payload.video_url
     )
-    return {"message": "Job queued for processing", "incident_id": payload.incident_id}
+    return {"message": "Job queued for classification and face blurring", "incident_id": payload.incident_id}
 
 
 @app.post("/process-unclassified", status_code=202)
@@ -139,7 +290,6 @@ async def trigger_unclassified_batch(
     background_tasks: BackgroundTasks,
     authorization: str = Header(None)
 ):
-    """Scans the bucket and processes any video without an ai_analysis record."""
     if HF_WEBHOOK_SECRET and authorization != f"Bearer {HF_WEBHOOK_SECRET}":
         raise HTTPException(status_code=401, detail="Unauthorized")
 
