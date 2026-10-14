@@ -10,6 +10,7 @@ import {
   Platform,
   Alert,
   Linking,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -27,6 +28,7 @@ import * as SMS from 'expo-sms';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useAuth } from '../../context/AuthContext';
 import { sendChatReply } from '../../services/ReportService';
+import { supabase } from '../../services/supabaseClient';
 
 interface Message {
   id: string;
@@ -84,44 +86,54 @@ const SmsChatScreen: React.FC = () => {
     }, 150);
   };
 
+  const normalizePhone = (raw?: string) => {
+    if (!raw) return null;
+    let cleaned = String(raw).trim().replace(/[\s\-\(\)]/g, '');
+    if (cleaned.startsWith('09') && cleaned.length === 11) return '+63' + cleaned.slice(1);
+    if (cleaned.startsWith('9') && cleaned.length === 10) return '+63' + cleaned;
+    if (cleaned.startsWith('639') && cleaned.length === 12) return '+' + cleaned;
+    if (cleaned.startsWith('+639')) return cleaned;
+    return cleaned;
+  };
+
   const sendMessage = async (body: string, commandName?: string) => {
-    // Add immediately to local message state
+    // Add immediately to local in-app chat display
     addMessage(body, 'user', commandName);
 
-    // 1. Try sending over HTTP to backend (Option 2 fallback: updates sms_messages immediately for Web App)
+    // 1. First priority: Try sending over HTTP to backend
     try {
       const token = state.auth.token || undefined;
       const result = await sendChatReply(body, token);
       if (result.success) {
-        console.log('[CHAT] Reply sent successfully to backend sms_messages');
+        console.log('[CHAT] Reply sent successfully via backend /api/chat/reply');
         return;
       }
-      console.warn('[CHAT] Backend reply failed, falling back to native SMS:', result.error);
+      console.warn('[CHAT] Backend reply failed, trying direct Supabase insert:', result.error);
     } catch (apiErr) {
-      console.warn('[CHAT] API connection error, falling back to native SMS:', apiErr);
+      console.warn('[CHAT] Backend error, falling back to direct Supabase insert:', apiErr);
     }
 
-    // 2. Fallback to native SMS if offline or backend is unreachable
+    // 2. Second priority: Insert directly into Supabase sms_messages table
+    // (This guarantees the web dispatcher receives it via realtime WITHOUT leaving the app!)
     try {
-      const isAvailable = await SMS.isAvailableAsync();
-      if (!isAvailable) {
-        Alert.alert(
-          'SMS Not Available',
-          'Could not reach server or native SMS service. Would you like to call the hotline?',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Call Hotline',
-              onPress: () => Linking.openURL(`tel:${responderPhone}`),
-            },
-          ]
-        );
-        return;
-      }
+      const citizenPhone = normalizePhone(state.auth.user?.phone) || '+639123456789';
+      const { error: insertError } = await supabase
+        .from('sms_messages')
+        .insert({
+          phone: citizenPhone,
+          body: body.trim(),
+          direction: 'inbound',
+          status: 'received',
+          provider_message_id: `inapp-${Date.now()}`
+        });
 
-      await SMS.sendSMSAsync([responderPhone], body);
-    } catch (smsErr) {
-      console.error('[SMS] Error sending SMS fallback:', smsErr);
+      if (insertError) {
+        console.error('[CHAT] Supabase direct insert error:', insertError);
+      } else {
+        console.log('[CHAT] ✅ Successfully inserted message into Supabase sms_messages table directly');
+      }
+    } catch (dbErr) {
+      console.error('[CHAT] Error saving to Supabase:', dbErr);
     }
   };
 
