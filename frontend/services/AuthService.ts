@@ -53,7 +53,7 @@ export const verifyEmailOtp = async (email: string, token: string, fullName?: st
         id: 'developer-test-uuid',
         name: fullName?.trim() || 'Developer Test',
         email: 'test@test.com',
-        phone: '+639123456789',
+        phone: undefined,
       },
       token: 'mock-jwt-token-for-testing',
     };
@@ -94,15 +94,41 @@ export const verifyEmailOtp = async (email: string, token: string, fullName?: st
   let resolvedName = (u.user_metadata as any)?.name || (fullName?.trim() ? fullName.trim() : '');
   let resolvedPhone = (u.user_metadata as any)?.phone;
 
-  // Sync from users table if missing in auth metadata
+  // 1. Try querying backend /api/user/profile using the session token (bypasses RLS)
   try {
-    const { data: dbUser } = await supabase.from('users').select('full_name, user_phone_number').eq('email', email).maybeSingle();
-    if (dbUser) {
-      if (!resolvedName && dbUser.full_name) resolvedName = dbUser.full_name;
-      if (!resolvedPhone && dbUser.user_phone_number) resolvedPhone = dbUser.user_phone_number;
+    const apiBase = process.env.EXPO_PUBLIC_API_BASE_URL || 'https://eksena-backend.onrender.com/api';
+    const profileRes = await fetch(`${apiBase}/user/profile`, {
+      headers: { Authorization: `Bearer ${data.session.access_token}` }
+    });
+    if (profileRes.ok) {
+      const profileData = await profileRes.json();
+      if (profileData.success && profileData.user) {
+        if (profileData.user.phone) resolvedPhone = profileData.user.phone;
+        if (profileData.user.name && !resolvedName) resolvedName = profileData.user.name;
+      }
     }
-  } catch (dbErr) {
-    console.warn('[AuthService] Could not query users table:', dbErr);
+  } catch (apiErr) {
+    console.warn('[AuthService] Could not fetch profile from backend:', apiErr);
+  }
+
+  // 2. Fallback: sync from users table using auth_user_id or email
+  if (!resolvedPhone) {
+    try {
+      const { data: dbUser } = await supabase
+        .from('users')
+        .select('full_name, user_phone_number')
+        .or(`auth_user_id.eq.${u.id},email.eq.${email}`)
+        .maybeSingle();
+
+      if (dbUser) {
+        if (!resolvedName && dbUser.full_name) resolvedName = dbUser.full_name;
+        if (!resolvedPhone && dbUser.user_phone_number && dbUser.user_phone_number !== 'unknown') {
+          resolvedPhone = dbUser.user_phone_number;
+        }
+      }
+    } catch (dbErr) {
+      console.warn('[AuthService] Could not query users table:', dbErr);
+    }
   }
 
   return {
@@ -134,20 +160,41 @@ export const getCurrentSession = async (): Promise<LoginResponse | null> => {
       let resolvedName = (u.user_metadata as any)?.name || '';
       let resolvedPhone = (u.user_metadata as any)?.phone;
 
-      // Sync name and phone from public.users table if missing
+      // 1. Try querying backend /api/user/profile using the session token (bypasses RLS)
       try {
-        const { data: dbUser } = await supabase
-          .from('users')
-          .select('full_name, user_phone_number')
-          .eq('email', u.email || '')
-          .maybeSingle();
-
-        if (dbUser) {
-          if (!resolvedName && dbUser.full_name) resolvedName = dbUser.full_name;
-          if (!resolvedPhone && dbUser.user_phone_number) resolvedPhone = dbUser.user_phone_number;
+        const apiBase = process.env.EXPO_PUBLIC_API_BASE_URL || 'https://eksena-backend.onrender.com/api';
+        const profileRes = await fetch(`${apiBase}/user/profile`, {
+          headers: { Authorization: `Bearer ${session.access_token}` }
+        });
+        if (profileRes.ok) {
+          const profileData = await profileRes.json();
+          if (profileData.success && profileData.user) {
+            if (profileData.user.phone) resolvedPhone = profileData.user.phone;
+            if (profileData.user.name && !resolvedName) resolvedName = profileData.user.name;
+          }
         }
-      } catch (dbErr) {
-        console.warn('[AuthService] Error querying users table in getCurrentSession:', dbErr);
+      } catch (apiErr) {
+        console.warn('[AuthService] Could not fetch profile from backend in getCurrentSession:', apiErr);
+      }
+
+      // 2. Fallback: sync from users table using auth_user_id or email
+      if (!resolvedPhone) {
+        try {
+          const { data: dbUser } = await supabase
+            .from('users')
+            .select('full_name, user_phone_number')
+            .or(`auth_user_id.eq.${u.id}${u.email ? `,email.eq.${u.email}` : ''}`)
+            .maybeSingle();
+
+          if (dbUser) {
+            if (!resolvedName && dbUser.full_name) resolvedName = dbUser.full_name;
+            if (!resolvedPhone && dbUser.user_phone_number && dbUser.user_phone_number !== 'unknown') {
+              resolvedPhone = dbUser.user_phone_number;
+            }
+          }
+        } catch (dbErr) {
+          console.warn('[AuthService] Error querying users table in getCurrentSession:', dbErr);
+        }
       }
 
       return {

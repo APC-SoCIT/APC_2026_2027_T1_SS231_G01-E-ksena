@@ -642,12 +642,21 @@ export const getDispatcherInfo = async (incidentId: string): Promise<{
 };
 
 // Send in-app citizen chat reply (Option 2 fallback: inserts into sms_messages via backend)
-export const sendChatReply = async (message: string, token?: string): Promise<{ success: boolean; data?: any; error?: string }> => {
+export const sendChatReply = async (
+  message: string,
+  token?: string,
+  serviceType?: string,
+  incidentId?: string
+): Promise<{ success: boolean; data?: any; error?: string }> => {
   try {
     if (token) {
       apiClient.setAuthToken(token);
     }
-    const response = await apiClient.post<any>('/chat/reply', { message });
+    const response = await apiClient.post<any>('/chat/reply', {
+      message,
+      service_type: serviceType,
+      incident_id: incidentId
+    });
     if (response.success && response.data?.success) {
       return { success: true, data: response.data.data };
     }

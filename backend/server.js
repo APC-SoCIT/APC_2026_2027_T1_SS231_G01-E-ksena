@@ -202,6 +202,49 @@ app.get('/health', (req, res) => {
 });
 
 // ============================================
+// ENDPOINT: Get Authenticated User Profile
+// ============================================
+app.get('/api/user/profile', requireAuth, async (req, res) => {
+  try {
+    const authUser = req.user;
+    if (!authUser?.id) {
+      return res.status(401).json({ success: false, error: 'User not authenticated' });
+    }
+
+    // Retrieve directly from public.users table using auth_user_id
+    const { data: dbUser, error: dbErr } = await supabase
+      .from('users')
+      .select('user_id, auth_user_id, email, full_name, user_phone_number')
+      .or(`auth_user_id.eq.${authUser.id},user_id.eq.${authUser.id}${authUser.email ? `,email.eq.${authUser.email}` : ''}`)
+      .maybeSingle();
+
+    if (dbErr) {
+      console.warn('[USER PROFILE] Error querying users table:', dbErr);
+    }
+
+    const resolvedPhone = dbUser?.user_phone_number && dbUser.user_phone_number !== 'unknown'
+      ? dbUser.user_phone_number
+      : (authUser.phone || authUser.user_metadata?.phone || null);
+
+    const resolvedName = dbUser?.full_name || authUser.user_metadata?.name || '';
+
+    return res.json({
+      success: true,
+      user: {
+        id: authUser.id,
+        email: authUser.email || dbUser?.email || '',
+        phone: resolvedPhone,
+        name: resolvedName,
+        user_id: dbUser?.user_id || null
+      }
+    });
+  } catch (err) {
+    console.error('[USER PROFILE] Exception:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ============================================
 // ENDPOINT 1: Report Emergency Incident
 // ============================================
 app.post('/api/report-incident', async (req, res) => {
@@ -587,6 +630,57 @@ app.post('/api/report-incident', async (req, res) => {
 
         if (aiError) {
           console.error('[AI] [ASYNC] Failed to insert AI analysis row:', aiError);
+        }
+
+        // Handle 'auto' classification: If incident was auto-classified and AI found a different service
+        if (!validManualService && aiDetectedService && aiDetectedService !== detectedService) {
+          console.log(`[AI] [ASYNC] Re-routing auto incident ${incident.incident_id} from ${detectedService} to ${aiDetectedService}...`);
+
+          // 1. Update legacy reports table classified_as
+          await supabase
+            .from('reports')
+            .update({ classified_as: aiDetectedService })
+            .eq('incident_id', incident.incident_id);
+
+          // 2. Find optimal active responder for the newly classified service
+          let { data: newResponders } = await supabase
+            .from('responders')
+            .select('responder_id, responder_phone_number, name, service_type, is_active, responder_location_lat, responder_location_lng')
+            .ilike('service_type', `%${aiDetectedService}%`)
+            .eq('is_active', true);
+
+          if (!newResponders || newResponders.length === 0) {
+            const { data: fbResponders } = await supabase
+              .from('responders')
+              .select('responder_id, responder_phone_number, name, service_type, is_active, responder_location_lat, responder_location_lng')
+              .ilike('service_type', `%${aiDetectedService}%`);
+            newResponders = fbResponders?.filter(r => r.is_active !== false) || [];
+          }
+
+          if (newResponders && newResponders.length > 0) {
+            const newAssignedResponder = newResponders[0];
+            // Update existing dispatch record safely to prevent duplicate notifications
+            const { error: updateDispatchErr } = await supabase
+              .from('dispatch')
+              .update({
+                responder_id: newAssignedResponder.responder_id,
+                service_type: aiDetectedService,
+                responder_phone_number: newAssignedResponder.responder_phone_number
+              })
+              .eq('incident_id', incident.incident_id);
+
+            if (updateDispatchErr) {
+              console.warn('[AI] [ASYNC] Could not update dispatch row:', updateDispatchErr.message);
+            } else {
+              console.log(`[AI] [ASYNC] Successfully re-routed dispatch to ${newAssignedResponder.name} (${aiDetectedService})`);
+            }
+
+            // Also update responder_username in reports
+            await supabase
+              .from('reports')
+              .update({ responder_username: newAssignedResponder.name || newAssignedResponder.responder_phone_number })
+              .eq('incident_id', incident.incident_id);
+          }
         }
       } catch (bgErr) {
         console.error('[AI-BLUR] [ASYNC] Error in background AI pipeline:', bgErr);
@@ -1002,6 +1096,52 @@ app.post('/api/sms/webhook', async (req, res) => {
     const phone = normalizePhilippinePhone(rawPhone);
 
     if (phone && body) {
+      // Resolve service_type to ensure inbound SMS is routed only to the assigned responder service
+      let webhookServiceType = null;
+
+      // 1. Check most recent outbound SMS to this phone
+      const { data: latestOutbound } = await supabase
+        .from('sms_messages')
+        .select('service_type')
+        .eq('phone', phone)
+        .eq('direction', 'outbound')
+        .not('service_type', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latestOutbound?.service_type) {
+        webhookServiceType = latestOutbound.service_type;
+      }
+
+      // 2. If not found, lookup latest incident for this phone number
+      if (!webhookServiceType) {
+        const { data: latestIncident } = await supabase
+          .from('incidents')
+          .select('incident_id')
+          .eq('user_phone_number', phone)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (latestIncident?.incident_id) {
+          const { data: latestReport } = await supabase
+            .from('reports')
+            .select('classified_as')
+            .eq('incident_id', latestIncident.incident_id)
+            .maybeSingle();
+
+          if (latestReport?.classified_as && ['medical', 'police', 'fire'].includes(latestReport.classified_as.toLowerCase())) {
+            webhookServiceType = latestReport.classified_as.toLowerCase();
+          }
+        }
+      }
+
+      // Fallback default to 'medical' to guarantee service_type is NEVER NULL
+      if (!webhookServiceType) {
+        webhookServiceType = 'medical';
+      }
+
       const { error: insertError } = await supabase
         .from('sms_messages')
         .insert({
@@ -1009,13 +1149,14 @@ app.post('/api/sms/webhook', async (req, res) => {
           body: body,
           direction: 'inbound',
           status: 'received',
+          service_type: webhookServiceType,
           provider_message_id: providerMessageId ? String(providerMessageId) : null
         });
 
       if (insertError) {
         console.error('[SMS WEBHOOK] Failed to insert inbound message into sms_messages:', insertError);
       } else {
-        console.log(`[SMS WEBHOOK] ✅ Successfully recorded inbound SMS from ${phone}`);
+        console.log(`[SMS WEBHOOK] ✅ Successfully recorded inbound SMS (${webhookServiceType}) from ${phone}`);
       }
     } else {
       console.warn('[SMS WEBHOOK] ⚠️ Skipping webhook insert: missing phone or body', { rawPhone, phone, hasBody: !!body });
@@ -1033,7 +1174,7 @@ app.post('/api/sms/webhook', async (req, res) => {
 // ============================================
 app.post('/api/chat/reply', requireAuth, async (req, res) => {
   try {
-    const { message } = req.body;
+    const { message, service_type, incident_id } = req.body;
     if (!message || typeof message !== 'string' || !message.trim()) {
       return res.status(400).json({ success: false, error: 'Message content is required' });
     }
@@ -1066,7 +1207,70 @@ app.post('/api/chat/reply', requireAuth, async (req, res) => {
       });
     }
 
-    // 2. Insert into sms_messages with direction = 'inbound', status = 'received'
+    // 2. Resolve service_type to ensure message is routed ONLY to assigned responder service
+    let resolvedServiceType = (service_type && ['medical', 'police', 'fire'].includes(String(service_type).toLowerCase()))
+      ? String(service_type).toLowerCase()
+      : null;
+
+    if (!resolvedServiceType && incident_id) {
+      // Lookup service_type from reports or ai_analysis for this specific incident
+      const { data: reportRow } = await supabase
+        .from('reports')
+        .select('classified_as')
+        .eq('incident_id', incident_id)
+        .maybeSingle();
+
+      if (reportRow?.classified_as && ['medical', 'police', 'fire'].includes(reportRow.classified_as.toLowerCase())) {
+        resolvedServiceType = reportRow.classified_as.toLowerCase();
+      }
+    }
+
+    if (!resolvedServiceType) {
+      // Lookup latest incident for this citizen to match their active responder
+      const { data: latestIncident } = await supabase
+        .from('incidents')
+        .select('incident_id')
+        .or(`user_phone_number.eq.${normalizedPhone}${citizenPhone ? `,user_phone_number.eq.${citizenPhone}` : ''}${authUser?.id ? `,user_id.eq.${authUser.id}` : ''}`)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latestIncident?.incident_id) {
+        const { data: latestReport } = await supabase
+          .from('reports')
+          .select('classified_as')
+          .eq('incident_id', latestIncident.incident_id)
+          .maybeSingle();
+
+        if (latestReport?.classified_as && ['medical', 'police', 'fire'].includes(latestReport.classified_as.toLowerCase())) {
+          resolvedServiceType = latestReport.classified_as.toLowerCase();
+        }
+      }
+    }
+
+    if (!resolvedServiceType) {
+      // Lookup most recent outbound SMS to this phone to determine active conversation channel
+      const { data: latestOutbound } = await supabase
+        .from('sms_messages')
+        .select('service_type')
+        .eq('phone', normalizedPhone)
+        .eq('direction', 'outbound')
+        .not('service_type', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latestOutbound?.service_type) {
+        resolvedServiceType = latestOutbound.service_type;
+      }
+    }
+
+    // Final fallback to medical to prevent null service_type leak across services
+    if (!resolvedServiceType) {
+      resolvedServiceType = 'medical';
+    }
+
+    // 3. Insert into sms_messages with isolated service_type, direction = 'inbound', status = 'received'
     const { data: insertedMsg, error: insertError } = await supabase
       .from('sms_messages')
       .insert({
@@ -1074,9 +1278,10 @@ app.post('/api/chat/reply', requireAuth, async (req, res) => {
         body: trimmedMessage,
         direction: 'inbound',
         status: 'received',
+        service_type: resolvedServiceType,
         provider_message_id: `app-reply-${Date.now()}`
       })
-      .select('id, phone, body, created_at')
+      .select('id, phone, body, service_type, created_at')
       .single();
 
     if (insertError) {
@@ -1084,7 +1289,7 @@ app.post('/api/chat/reply', requireAuth, async (req, res) => {
       return res.status(500).json({ success: false, error: 'Database insert failed' });
     }
 
-    console.log(`[CHAT REPLY] ✅ Inbound message recorded from ${normalizedPhone}: "${trimmedMessage.slice(0, 30)}..."`);
+    console.log(`[CHAT REPLY] ✅ Inbound message (${resolvedServiceType}) recorded from ${normalizedPhone}: "${trimmedMessage.slice(0, 30)}..."`);
     return res.json({
       success: true,
       data: insertedMsg

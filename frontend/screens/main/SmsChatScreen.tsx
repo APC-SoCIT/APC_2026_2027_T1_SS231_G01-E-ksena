@@ -46,9 +46,10 @@ const SmsChatScreen: React.FC = () => {
   const route = useRoute<any>();
   const { state } = useAuth();
 
-  const responderPhone = route.params?.responderPhone || '+639123456789';
+  const responderPhone = route.params?.responderPhone || '';
   const incidentId = route.params?.incidentId || null;
   const responderName = route.params?.responderName || 'Emergency Dispatch';
+  const serviceType = route.params?.serviceType || 'medical';
 
   const [inputText, setInputText] = useState('');
   const [showCommands, setShowCommands] = useState(true);
@@ -99,16 +100,18 @@ const SmsChatScreen: React.FC = () => {
     return cleaned;
   };
 
-  const sendMessage = async (body: string, commandName?: string) => {
+  const sendMessage = async (body: string, commandName?: string, overrideServiceType?: string) => {
     // Add immediately to local in-app chat display
     addMessage(body, 'user', commandName);
+
+    const activeService = overrideServiceType || serviceType || 'medical';
 
     // 1. First priority: Try sending over HTTP to backend
     try {
       const token = state.auth.token || undefined;
-      const result = await sendChatReply(body, token);
+      const result = await sendChatReply(body, token, activeService, incidentId || undefined);
       if (result.success) {
-        console.log('[CHAT] Reply sent successfully via backend /api/chat/reply');
+        console.log(`[CHAT] Reply sent successfully via backend /api/chat/reply (${activeService})`);
         return;
       }
       console.warn('[CHAT] Backend reply failed, trying direct Supabase insert:', result.error);
@@ -116,10 +119,15 @@ const SmsChatScreen: React.FC = () => {
       console.warn('[CHAT] Backend error, falling back to direct Supabase insert:', apiErr);
     }
 
-    // 2. Second priority: Insert directly into Supabase sms_messages table
+    // 2. Second priority: Insert directly into Supabase sms_messages table with isolated service_type
     // (This guarantees the web dispatcher receives it via realtime WITHOUT leaving the app!)
     try {
-      const citizenPhone = normalizePhone(state.auth.user?.phone) || '+639123456789';
+      const citizenPhone = normalizePhone(state.auth.user?.phone);
+      if (!citizenPhone) {
+        console.warn('[CHAT] Citizen phone not found in auth user profile');
+        return;
+      }
+
       const { error: insertError } = await supabase
         .from('sms_messages')
         .insert({
@@ -127,20 +135,21 @@ const SmsChatScreen: React.FC = () => {
           body: body.trim(),
           direction: 'inbound',
           status: 'received',
+          service_type: activeService,
           provider_message_id: `inapp-${Date.now()}`
         });
 
       if (insertError) {
         console.error('[CHAT] Supabase direct insert error:', insertError);
       } else {
-        console.log('[CHAT] ✅ Successfully inserted message into Supabase sms_messages table directly');
+        console.log(`[CHAT] ✅ Successfully inserted message (${activeService}) into Supabase sms_messages table directly`);
       }
     } catch (dbErr) {
       console.error('[CHAT] Error saving to Supabase:', dbErr);
     }
   };
 
-  const triggerEmergencyReport = async (serviceType: 'medical' | 'police' | 'fire', label: string) => {
+  const triggerEmergencyReport = async (emergencyServiceType: 'medical' | 'police' | 'fire', label: string) => {
     const { latitude, longitude, address } = state.location;
     const locationString = address || (latitude && longitude ? `${latitude}, ${longitude}` : 'Location pending');
     const mapsLink = latitude && longitude ? `https://maps.google.com/?q=${latitude},${longitude}` : '';
@@ -150,20 +159,20 @@ Location: ${locationString}
 ${mapsLink ? `Map: ${mapsLink}` : ''}
 Sent via E-ksena`;
 
-    // 1. Send in-app message
-    await sendMessage(body, `/report ${label}`);
+    // 1. Send in-app message routed directly to that emergency unit
+    await sendMessage(body, `/report ${label}`, emergencyServiceType);
 
     // 2. Dispatch incident with specific serviceType so backend picks the fastest traffic-based responder
     try {
-      const userPhone = state.auth.user?.phone || '+639123456789';
-      if (latitude && longitude) {
+      const userPhone = state.auth.user?.phone || '';
+      if (latitude && longitude && userPhone) {
         addMessage(`Dispatching fastest available ${label} responder to your location...`, 'system');
         const reportResult = await sendVideoReport(
           'mock://sms-report',
           { latitude, longitude, address: address || undefined },
           userPhone,
           'mock://sms-report',
-          serviceType,
+          emergencyServiceType,
           state.auth.user?.id
         );
 
@@ -267,7 +276,7 @@ Sent via E-ksena`;
             {responderName}
           </Text>
           <Text style={styles.headerSubtitle} numberOfLines={1}>
-            {responderPhone} • SMS Active
+            {responderPhone ? `${responderPhone} • SMS Active` : 'Emergency Dispatch • SMS Active'}
           </Text>
         </View>
 

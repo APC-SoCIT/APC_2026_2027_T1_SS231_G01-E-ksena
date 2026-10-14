@@ -213,18 +213,40 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         let resolvedPhone = (u.user_metadata as any)?.phone;
 
         if (!resolvedName || !resolvedPhone) {
+          // 1. Try backend /api/user/profile
           try {
-            const { data: dbUser } = await supabase
-              .from('users')
-              .select('full_name, user_phone_number')
-              .eq('email', u.email || '')
-              .maybeSingle();
-            if (dbUser) {
-              if (!resolvedName && dbUser.full_name) resolvedName = dbUser.full_name;
-              if (!resolvedPhone && dbUser.user_phone_number) resolvedPhone = dbUser.user_phone_number;
+            const apiBase = process.env.EXPO_PUBLIC_API_BASE_URL || 'https://eksena-backend.onrender.com/api';
+            const profileRes = await fetch(`${apiBase}/user/profile`, {
+              headers: { Authorization: `Bearer ${session.access_token}` }
+            });
+            if (profileRes.ok) {
+              const profileData = await profileRes.json();
+              if (profileData.success && profileData.user) {
+                if (profileData.user.phone) resolvedPhone = profileData.user.phone;
+                if (profileData.user.name && !resolvedName) resolvedName = profileData.user.name;
+              }
             }
           } catch (e) {
             // silent catch
+          }
+
+          // 2. Fallback query users table by auth_user_id or email
+          if (!resolvedPhone) {
+            try {
+              const { data: dbUser } = await supabase
+                .from('users')
+                .select('full_name, user_phone_number')
+                .or(`auth_user_id.eq.${u.id}${u.email ? `,email.eq.${u.email}` : ''}`)
+                .maybeSingle();
+              if (dbUser) {
+                if (!resolvedName && dbUser.full_name) resolvedName = dbUser.full_name;
+                if (!resolvedPhone && dbUser.user_phone_number && dbUser.user_phone_number !== 'unknown') {
+                  resolvedPhone = dbUser.user_phone_number;
+                }
+              }
+            } catch (e) {
+              // silent catch
+            }
           }
         }
 

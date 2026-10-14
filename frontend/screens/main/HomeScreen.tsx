@@ -371,9 +371,10 @@ const HomeScreen: React.FC = () => {
 
   const handleSMSFallback = () => {
     (navigation as any).navigate('SmsChatScreen', {
-      responderPhone: responderData?.dispatcherPhone || '+639123456789',
+      responderPhone: responderData?.dispatcherPhone || '',
       incidentId: responderData?.incidentId || null,
       responderName: responderData?.dispatcherName || 'Emergency Dispatch',
+      serviceType: responderData?.serviceType || 'medical',
     });
   };
 
