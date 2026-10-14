@@ -41,6 +41,44 @@ const VideoCameraScreen: React.FC = () => {
     if (!micPermission?.granted) requestMic();
   }, [camPermission, micPermission]);
 
+  // Check Data Privacy Act & Patient Privacy Notice upon entering Emergency Broadcast
+  useEffect(() => {
+    const checkPrivacyNotice = async () => {
+      try {
+        const noticeSeen = await AsyncStorage.getItem('@eksena_dpa_patient_notice_seen');
+        if (!noticeSeen) {
+          Alert.alert(
+            'Data Privacy Act (RA 10173) & Patient Privacy Notice',
+            'Under RA 10173 (Data Privacy Act of 2012) and emergency ethics:\n\n' +
+            '• Filming identifiable faces, patients, or victims involved in an accident is strictly restricted.\n' +
+            '• E-ksena automatically detects and blurs all human faces before footage is dispatched to responders.\n' +
+            '• Video and GPS are recorded solely to verify emergency incidents and dispatch responders.\n\n' +
+            'By proceeding, you agree to record responsibly and adhere to privacy guidelines.',
+            [
+              {
+                text: 'Cancel',
+                style: 'cancel',
+                onPress: () => navigation.goBack()
+              },
+              {
+                text: 'I Understand & Agree',
+                onPress: async () => {
+                  await AsyncStorage.setItem('@eksena_dpa_patient_notice_seen', 'true');
+                  await AsyncStorage.setItem('@eksena_ai_recording_notice_seen', 'true');
+                }
+              }
+            ],
+            { cancelable: false }
+          );
+        }
+      } catch (err) {
+        console.warn('[VideoCameraScreen] Privacy notice check error:', err);
+      }
+    };
+
+    checkPrivacyNotice();
+  }, []);
+
   useEffect(() => {
     return () => {
       if (timerRef.current) {
@@ -61,29 +99,6 @@ const VideoCameraScreen: React.FC = () => {
       }
       cameraRef.current?.stopRecording();
     } else {
-      try {
-        const noticeSeen = await AsyncStorage.getItem('@eksena_ai_recording_notice_seen');
-        if (!noticeSeen) {
-          Alert.alert(
-            'Automated AI Processing Notice',
-            'Under Section 5 of the Privacy Policy and RA 10173 (Data Privacy Act), video recorded here is automatically analyzed by an AI system to classify emergency severity and dispatched to responders.\n\nDo you consent to proceed?',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              {
-                text: 'Consent & Record',
-                onPress: async () => {
-                  await AsyncStorage.setItem('@eksena_ai_recording_notice_seen', 'true');
-                  startEmergencyRecording();
-                },
-              },
-            ]
-          );
-          return;
-        }
-      } catch (err) {
-        console.warn('[VideoCameraScreen] Notice check error:', err);
-      }
-
       startEmergencyRecording();
     }
   };
