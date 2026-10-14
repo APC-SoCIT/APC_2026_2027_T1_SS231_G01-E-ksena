@@ -496,7 +496,7 @@ app.post('/api/report-incident', async (req, res) => {
 
           try {
             const controller = new AbortController();
-            const fetchTimeout = setTimeout(() => controller.abort(), 60000);
+            const fetchTimeout = setTimeout(() => controller.abort(), 120000); // 120s timeout for cold-start video processing
 
             const aiResponse = await fetch(`${aiUrl}/process-video`, {
               method: 'POST',
