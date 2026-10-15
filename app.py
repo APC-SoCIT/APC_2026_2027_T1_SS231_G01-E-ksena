@@ -7,21 +7,15 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.models.video as models
 import uvicorn
-import cv2
 import mediapipe as mp
-
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Header
 from pydantic import BaseModel
 from supabase import create_client, Client
 
 app = FastAPI()
-
-
-FRONTAL_CASCADE = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-PROFILE_CASCADE = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
-
 
 # --- 1. Environment & Supabase Setup ---
 SUPABASE_URL = os.environ.get("supabase_url") or os.environ.get("SUPABASE_URL")
@@ -42,25 +36,16 @@ MODEL_WEIGHTS_PATH = "emergency_r3d18.pth"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-class EmergencyModel(nn.Module):
-    def __init__(self):
-        super(EmergencyModel, self).__init__()
-        self.conv1 = nn.Conv3d(3, 16, kernel_size=3, padding=1)
-        self.pool = nn.MaxPool3d(2)
-        self.conv2 = nn.Conv3d(16, 32, kernel_size=3, padding=1)
-        self.flatten = nn.Flatten()
-        self.fc1 = nn.Linear(32 * 4 * 28 * 28, 64)
-        self.fc2 = nn.Linear(64, 3)
+# Initialize Torchvision R3D-18 video architecture to match saved state_dict layers
+model = models.r3d_18(pretrained=False)
+num_ftrs = model.fc.in_features
+model.fc = nn.Sequential(
+    nn.Dropout(0.5),
+    nn.Linear(num_ftrs, len(LABEL_NAMES))
+)
+model = model.to(device)
 
-    def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = self.flatten(x)
-        x = F.relu(self.fc1(x))
-        return self.fc2(x)
-
-# Load model globally on startup
-model = EmergencyModel().to(device)
+# Load model weights globally on startup
 if os.path.exists(MODEL_WEIGHTS_PATH):
     model.load_state_dict(torch.load(MODEL_WEIGHTS_PATH, map_location=device))
     model.eval()
@@ -69,10 +54,9 @@ else:
     model.eval()
     print(f"Warning: {MODEL_WEIGHTS_PATH} not found. Running with initialized weights.")
 
-# Load OpenCV built-in Haar Cascade face detector
-FACE_CASCADE = cv2.CascadeClassifier(
-    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-)
+# Load OpenCV built-in Haar Cascade face detectors cleanly
+FRONTAL_CASCADE = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+PROFILE_CASCADE = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
 
 
 class VideoPayload(BaseModel):
@@ -147,7 +131,7 @@ def anonymize_video_file(input_path: str, output_path: str, detect_every_n: int 
 
 # --- 4. 3D-CNN Video Preprocessing & Inference ---
 def run_model_inference(local_video_path: str) -> tuple[str, float]:
-    """Samples 16 frames from the video and runs the 3D-CNN classifier."""
+    """Samples 16 frames from the video and runs the Torchvision R3D-18 classifier."""
     cap = cv2.VideoCapture(local_video_path)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     indices = np.linspace(0, max(0, total - 1), NUM_FRAMES, dtype=int)
@@ -179,15 +163,13 @@ def run_model_inference(local_video_path: str) -> tuple[str, float]:
 
 # --- 5. Background Pipeline Worker ---
 def process_single_incident(incident_id: str, file_path: str = "", video_url: str = ""):
-    """Downloads video, runs 3D-CNN, blurs faces, updates storage, and writes to ai_analysis."""
+    """Downloads video, runs R3D-18, blurs faces, updates storage, and writes to ai_analysis."""
     try:
-        # Avoid duplicate processing if incident_id already exists in ai_analysis
         existing = supabase.table("ai_analysis").select("id").eq("incident_id", incident_id).execute()
         if existing.data:
             print(f"[SKIP] Incident {incident_id} is already classified.")
             return
 
-        # 1. Get Signed URL from 'incident-videos' if not provided
         if not video_url and file_path:
             signed_res = supabase.storage.from_("incident-videos").create_signed_url(file_path, 900)
             if isinstance(signed_res, dict) and "signedUrl" in signed_res:
@@ -203,18 +185,14 @@ def process_single_incident(incident_id: str, file_path: str = "", video_url: st
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=True) as raw_video, \
              tempfile.NamedTemporaryFile(suffix=".mp4", delete=True) as blurred_video:
 
-            # 2. Download original video from Supabase Storage
             urllib.request.urlretrieve(video_url, raw_video.name)
 
-            # 3. Classify video with 3D-CNN
             detected_type, confidence = run_model_inference(raw_video.name)
 
-            # 4. Blur faces across the entire video (Implementation 2)
             if file_path:
                 print(f"[PRIVACY] Blurring faces in {file_path}...")
                 anonymize_video_file(raw_video.name, blurred_video.name)
 
-                # 5. Overwrite original unblurred video in Supabase Storage
                 with open(blurred_video.name, "rb") as f:
                     supabase.storage.from_("incident-videos").upload(
                         path=file_path,
@@ -223,7 +201,6 @@ def process_single_incident(incident_id: str, file_path: str = "", video_url: st
                     )
                 print(f"[PRIVACY] Uploaded anonymized video to incident-videos/{file_path}")
 
-        # 6. Insert classification result into ai_analysis
         analysis_record = {
             "incident_id": incident_id,
             "model_version": MODEL_VERSION,
@@ -241,7 +218,6 @@ def process_single_incident(incident_id: str, file_path: str = "", video_url: st
 
 
 def process_all_unclassified_videos():
-    """Finds any video in incident-videos not yet recorded in ai_analysis and processes it."""
     try:
         analyzed_resp = supabase.table("ai_analysis").select("incident_id").execute()
         analyzed_ids = {row["incident_id"] for row in analyzed_resp.data if row.get("incident_id")}
