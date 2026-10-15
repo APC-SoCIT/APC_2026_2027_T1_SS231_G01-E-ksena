@@ -38,7 +38,7 @@ IMG_SIZE = (112, 112)
 NUM_FRAMES = 16
 LABEL_NAMES = ["Fire", "Police", "Medical"]
 MODEL_VERSION = "emergency_ai3"
-MODEL_WEIGHTS_PATH = "emergency_ai3.pth"
+MODEL_WEIGHTS_PATH = "emergency_r3d18.pth"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
