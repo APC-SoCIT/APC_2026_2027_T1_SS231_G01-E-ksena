@@ -553,6 +553,53 @@ export default function MapScreen() {
     setSelectedId(null);
   };
 
+  // Marks the incident as "No emergency" and resolves it so it is dismissed from the active list.
+  const handleNoEmergency = async (group: ReportGroup<EmergencyReport>) => {
+    setStatusError(null);
+    setReassigning(true);
+    const ids = group.members.map((m) => m.id);
+
+    const update: Record<string, unknown> = {
+      status: 'resolved',
+      responder_username: user?.username ?? null,
+    };
+
+    const { error } = await supabase.from('reports').update(update).in('report_id', ids);
+    if (error) {
+      setReassigning(false);
+      setStatusError(error.message);
+      Alert.alert('Could not dismiss report', error.message);
+      return;
+    }
+
+    // End any linked dispatch trip
+    await setTripStatus(ids, 'resolved');
+
+    const auditError = await recordDispatchAction(
+      {
+        action: 'status_change',
+        previousValue: group.lead.status,
+        newValue: 'resolved',
+        reportIds: ids,
+        detail: {
+          reason: 'no_emergency',
+          incident_id: group.lead.incidentId,
+          emergency_type: group.lead.classified_as ?? null,
+          grouped_reports: ids.length,
+        },
+      },
+      { username: user?.username, role: user?.role }
+    );
+    if (auditError) {
+      setStatusError(`Report marked as no emergency, but it was not recorded in the audit log: ${auditError}`);
+    }
+
+    setReassigning(false);
+    setReassignOpen(false);
+    setReports((prev) => prev.filter((r) => !ids.includes(r.id)));
+    setSelectedId(null);
+  };
+
   if (loadError) {
     return (
       <View style={styles.errorContainer}>
@@ -756,6 +803,16 @@ export default function MapScreen() {
                         <Text style={styles.reassignOptionText}>{RoleThemes[role].displayName}</Text>
                       </Pressable>
                     ))}
+                  <Pressable
+                    disabled={reassigning}
+                    onPress={() => selectedGroup && handleNoEmergency(selectedGroup)}
+                    style={({ pressed }) => [styles.reassignOption, pressed && styles.reassignOptionPressed]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Mark as No emergency"
+                  >
+                    <View style={[styles.reassignDot, { backgroundColor: '#64748B' }]} />
+                    <Text style={styles.reassignOptionText}>No emergency</Text>
+                  </Pressable>
                   {reassigning ? <ActivityIndicator style={styles.reassignSpinner} color={theme.primary} /> : null}
                 </View>
               ) : null}
