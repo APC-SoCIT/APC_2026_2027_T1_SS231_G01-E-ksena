@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, Platform, Pressable } from 'react-native';
+import { MaterialIcons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import {
   Spacing,
@@ -114,6 +115,8 @@ export function ResponderVideoPlayer({
   recordedVideoUrl?: string | null;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const activeStreamRef = useRef<MediaStream | null>(null);
+  const closePcRef = useRef<(() => void) | null>(null);
   const [state, setState] = useState<ConnectionState>('idle');
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [needsTap, setNeedsTap] = useState(false);
@@ -182,6 +185,7 @@ export function ResponderVideoPlayer({
       pc.close();
       pc = null;
     };
+    closePcRef.current = closePc;
 
     const failureReason = (): string => {
       if (remoteTypes.size === 0) {
@@ -233,12 +237,23 @@ export function ResponderVideoPlayer({
 
       next.ontrack = (event) => {
         if (cancelled || pc !== next) return;
-        const stream = event.streams[0];
         const video = videoRef.current;
-        if (!video || !stream) return;
-        video.srcObject = stream;
-        // Muted playback is always allowed to start. With sound, the browser wants a tap first,
-        // which would leave a responder looking at a black box.
+        if (!video) return;
+
+        // Support both event.streams and track-only payloads (common in react-native-webrtc)
+        let stream = (event.streams && event.streams[0]) || null;
+        if (!stream) {
+          const current = (video.srcObject as MediaStream) || activeStreamRef.current || new MediaStream();
+          current.addTrack(event.track);
+          stream = current;
+        }
+
+        activeStreamRef.current = stream;
+        if (video.srcObject !== stream) {
+          video.srcObject = stream;
+        }
+
+        // Muted playback is allowed to start automatically without triggering browser block
         video.muted = true;
         setMuted(true);
         video.play().then(
@@ -424,6 +439,40 @@ export function ResponderVideoPlayer({
     );
   }
 
+  const handleAcceptCall = () => {
+    const video = videoRef.current;
+    if (video) {
+      if (!video.srcObject && activeStreamRef.current) {
+        video.srcObject = activeStreamRef.current;
+      }
+      video.muted = false;
+      setMuted(false);
+      video.play().then(
+        () => setNeedsTap(false),
+        () => {
+          video.muted = true;
+          setMuted(true);
+          video.play().then(() => setNeedsTap(false)).catch(() => setNeedsTap(true));
+        }
+      );
+    }
+  };
+
+  const handleEndCall = () => {
+    if (activeStreamRef.current) {
+      activeStreamRef.current.getTracks().forEach((track) => track.stop());
+      activeStreamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    if (closePcRef.current) {
+      closePcRef.current();
+    }
+    setState('ended');
+    setNeedsTap(false);
+  };
+
   const isLive = state === 'live';
   const isConnecting = state === 'connecting';
   // A call takes over the box from the moment the caller starts it, not only once video arrives.
@@ -452,8 +501,34 @@ export function ResponderVideoPlayer({
   return (
     <View style={styles.card}>
       <View style={styles.statusRow}>
-        <View style={[styles.dot, isLive ? styles.dotLive : styles.dotIdle]} />
-        <Text style={styles.statusText}>{headerText}</Text>
+        <View style={styles.statusLeft}>
+          <View style={[styles.dot, isLive ? styles.dotLive : isConnecting ? styles.dotConnecting : styles.dotIdle]} />
+          <Text style={styles.statusText}>{headerText}</Text>
+        </View>
+        <View style={styles.statusActions}>
+          {(isConnecting || (isLive && needsTap)) && (
+            <Pressable
+              style={styles.acceptHeaderBtn}
+              onPress={handleAcceptCall}
+              accessibilityRole="button"
+              accessibilityLabel="Accept Call"
+            >
+              <MaterialIcons name="call" size={16} color={WHITE} />
+              <Text style={styles.acceptHeaderBtnText}>Accept Call</Text>
+            </Pressable>
+          )}
+          {isLive && (
+            <Pressable
+              style={styles.endHeaderBtn}
+              onPress={handleEndCall}
+              accessibilityRole="button"
+              accessibilityLabel="End Call"
+            >
+              <MaterialIcons name="call-end" size={16} color={WHITE} />
+              <Text style={styles.endHeaderBtnText}>End Call</Text>
+            </Pressable>
+          )}
+        </View>
       </View>
 
       <View style={styles.videoFrame}>
@@ -461,6 +536,7 @@ export function ResponderVideoPlayer({
           ref={videoRef}
           autoPlay
           playsInline
+          muted={muted}
           style={{
             width: '100%',
             height: '100%',
@@ -496,23 +572,26 @@ export function ResponderVideoPlayer({
           </View>
         ) : null}
         {isConnecting ? (
-          <View style={styles.connectingOverlay} pointerEvents="none">
-            <Text style={styles.tapOverlayText}>Connecting to the caller…</Text>
-            <Text style={styles.tapOverlayHint}>The live stream will appear here in a moment.</Text>
+          <View style={styles.connectingOverlay}>
+            <Text style={styles.tapOverlayText}>Incoming Call from Citizen…</Text>
+            <Text style={styles.tapOverlayHint}>Tap Accept Call below to join the live audio/video stream.</Text>
+            <Pressable style={styles.bigAcceptBtn} onPress={handleAcceptCall}>
+              <MaterialIcons name="call" size={20} color={WHITE} />
+              <Text style={styles.bigAcceptBtnText}>Accept Call</Text>
+            </Pressable>
           </View>
         ) : null}
         {isLive && needsTap ? (
           <Pressable
             style={styles.tapOverlay}
-            onPress={() => {
-              videoRef.current?.play().then(
-                () => setNeedsTap(false),
-                () => setNeedsTap(true)
-              );
-            }}
+            onPress={handleAcceptCall}
           >
-            <Text style={styles.tapOverlayText}>Tap to play the live stream</Text>
-            <Text style={styles.tapOverlayHint}>The browser paused the stream. Tap to start it.</Text>
+            <MaterialIcons name="call" size={28} color={WHITE} style={{ marginBottom: 6 }} />
+            <Text style={styles.tapOverlayText}>Accept Call & Play Live Stream</Text>
+            <Text style={styles.tapOverlayHint}>The browser paused the stream. Tap to start audio & video.</Text>
+            <View style={styles.bigAcceptBtn}>
+              <Text style={styles.bigAcceptBtnText}>Accept Call</Text>
+            </View>
           </Pressable>
         ) : null}
         {isLive && !needsTap && muted ? (
@@ -551,11 +630,65 @@ const styles = StyleSheet.create({
   statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.sm,
+    justifyContent: 'space-between',
     paddingVertical: Spacing.sm,
     paddingHorizontal: Spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: BORDER,
+  },
+  statusLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    flex: 1,
+  },
+  statusActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  acceptHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: SUCCESS,
+    paddingVertical: 5,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: Radius.sm,
+  },
+  acceptHeaderBtnText: {
+    fontSize: FontSizes.xs,
+    fontWeight: '700',
+    color: WHITE,
+  },
+  endHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: BRAND_RED,
+    paddingVertical: 5,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: Radius.sm,
+  },
+  endHeaderBtnText: {
+    fontSize: FontSizes.xs,
+    fontWeight: '700',
+    color: WHITE,
+  },
+  bigAcceptBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    backgroundColor: SUCCESS,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.lg,
+    borderRadius: Radius.md,
+    marginTop: Spacing.sm,
+  },
+  bigAcceptBtnText: {
+    fontSize: FontSizes.body,
+    fontWeight: '700',
+    color: WHITE,
   },
   dot: {
     width: 8,
@@ -564,6 +697,9 @@ const styles = StyleSheet.create({
   },
   dotLive: {
     backgroundColor: SUCCESS,
+  },
+  dotConnecting: {
+    backgroundColor: '#F59E0B',
   },
   dotIdle: {
     backgroundColor: TEXT_SECONDARY,
