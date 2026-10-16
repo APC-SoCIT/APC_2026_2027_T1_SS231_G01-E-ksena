@@ -4,7 +4,7 @@ export default {
   expo: {
     owner: "manininini",
     name: "E-KSENA",
-    slug: "e-ksena-emergency",
+    slug: "eksena",
     version: "1.0.0",
     orientation: "portrait",
     icon: "./assets/images/icon.png",
