@@ -8,6 +8,7 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  PermissionsAndroid,
   Alert,
   Linking,
   ActivityIndicator,
@@ -28,9 +29,11 @@ import {
   HeartPulse,
 } from 'lucide-react-native';
 import * as SMS from 'expo-sms';
+import * as Location from 'expo-location';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useAuth } from '../../context/AuthContext';
 import { sendChatReply, sendVideoReport } from '../../services/ReportService';
+import { hasActiveIncident } from '../../services/activeIncidentStorage';
 import { supabase } from '../../services/supabaseClient';
 
 interface Message {
@@ -101,6 +104,24 @@ const SmsChatScreen: React.FC = () => {
   };
 
   const sendMessage = async (body: string, commandName?: string, overrideServiceType?: string) => {
+    if (Platform.OS === 'android') {
+      const permission = PermissionsAndroid.PERMISSIONS.SEND_SMS;
+      const alreadyGranted = await PermissionsAndroid.check(permission);
+      const result = alreadyGranted
+        ? PermissionsAndroid.RESULTS.GRANTED
+        : await PermissionsAndroid.request(permission, {
+          title: 'SMS permission required',
+          message: 'E-Ksena needs SMS permission before sending emergency SMS messages.',
+          buttonPositive: 'Allow',
+          buttonNegative: 'Cancel',
+        });
+
+      if (result !== PermissionsAndroid.RESULTS.GRANTED) {
+        Alert.alert('SMS not sent', 'SMS permission was not granted.');
+        return false;
+      }
+    }
+
     // Add immediately to local in-app chat display
     addMessage(body, 'user', commandName);
 
@@ -112,7 +133,7 @@ const SmsChatScreen: React.FC = () => {
       const result = await sendChatReply(body, token, activeService, incidentId || undefined);
       if (result.success) {
         console.log(`[CHAT] Reply sent successfully via backend /api/chat/reply (${activeService})`);
-        return;
+        return true;
       }
       console.warn('[CHAT] Backend reply failed, trying direct Supabase insert:', result.error);
     } catch (apiErr) {
@@ -125,7 +146,7 @@ const SmsChatScreen: React.FC = () => {
       const citizenPhone = normalizePhone(state.auth.user?.phone);
       if (!citizenPhone) {
         console.warn('[CHAT] Citizen phone not found in auth user profile');
-        return;
+        return false;
       }
 
       const { error: insertError } = await supabase
@@ -141,16 +162,39 @@ const SmsChatScreen: React.FC = () => {
 
       if (insertError) {
         console.error('[CHAT] Supabase direct insert error:', insertError);
+        return false;
       } else {
         console.log(`[CHAT] ✅ Successfully inserted message (${activeService}) into Supabase sms_messages table directly`);
       }
     } catch (dbErr) {
       console.error('[CHAT] Error saving to Supabase:', dbErr);
     }
+    return true;
   };
 
   const triggerEmergencyReport = async (emergencyServiceType: 'medical' | 'police' | 'fire', label: string) => {
-    const { latitude, longitude, address } = state.location;
+    if (state.auth.user?.id && await hasActiveIncident(state.auth.user.id)) {
+      Alert.alert('Active emergency', 'Only one emergency report can be active at a time.');
+      return;
+    }
+
+    const servicesEnabled = await Location.hasServicesEnabledAsync();
+    const permission = await Location.getForegroundPermissionsAsync();
+    if (!servicesEnabled || permission.status !== 'granted') {
+      Alert.alert('Location required', 'Enable location services and allow location access before sending a report.');
+      return;
+    }
+
+    let freshPosition;
+    try {
+      freshPosition = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+    } catch {
+      Alert.alert('Location unavailable', 'Could not get your current location. Please try again.');
+      return;
+    }
+
+    const { latitude, longitude } = freshPosition.coords;
+    const { address } = state.location;
     const locationString = address || (latitude && longitude ? `${latitude}, ${longitude}` : 'Location pending');
     const mapsLink = latitude && longitude ? `https://maps.google.com/?q=${latitude},${longitude}` : '';
 
@@ -160,7 +204,8 @@ ${mapsLink ? `Map: ${mapsLink}` : ''}
 Sent via E-ksena`;
 
     // 1. Send in-app message routed directly to that emergency unit
-    await sendMessage(body, `/report ${label}`, emergencyServiceType);
+    const messageSent = await sendMessage(body, `/report ${label}`, emergencyServiceType);
+    if (!messageSent) return;
 
     // 2. Dispatch incident with specific serviceType so backend picks the fastest traffic-based responder
     try {

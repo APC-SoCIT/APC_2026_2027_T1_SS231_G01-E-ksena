@@ -267,6 +267,44 @@ app.post('/api/report-incident', async (req, res) => {
       ? user_phone_number
       : (reporterUser.phone || user_phone_number);
 
+    // Enforce one unresolved incident per citizen on the server as well as in
+    // the mobile UI. This prevents duplicate reports from retries/double taps.
+    let existingIncidentQuery = supabase
+      .from('incidents')
+      .select('incident_id')
+      .order('created_at', { ascending: false })
+      .limit(20);
+    if (reporterUserId && finalReporterPhone) {
+      existingIncidentQuery = existingIncidentQuery.or(
+        `user_id.eq.${reporterUserId},user_phone_number.eq.${finalReporterPhone}`
+      );
+    } else if (reporterUserId) {
+      existingIncidentQuery = existingIncidentQuery.eq('user_id', reporterUserId);
+    } else {
+      existingIncidentQuery = existingIncidentQuery.eq('user_phone_number', finalReporterPhone);
+    }
+
+    const { data: citizenIncidents } = await existingIncidentQuery;
+    const citizenIncidentIds = (citizenIncidents || []).map(row => row.incident_id);
+    if (citizenIncidentIds.length > 0) {
+      const { data: activeDispatch } = await supabase
+        .from('dispatch')
+        .select('incident_id, status')
+        .in('incident_id', citizenIncidentIds)
+        .neq('status', 'resolved')
+        .limit(1)
+        .maybeSingle();
+
+      if (activeDispatch) {
+        return res.status(409).json({
+          success: false,
+          code: 'ACTIVE_INCIDENT_EXISTS',
+          incident_id: activeDispatch.incident_id,
+          error: 'Only one emergency report can be active at a time.'
+        });
+      }
+    }
+
     // Resolve location_address: if null/empty, reverse geocode or use GPS coordinate string fallback
     let resolvedAddress = location_address && String(location_address).trim() ? String(location_address).trim() : null;
 

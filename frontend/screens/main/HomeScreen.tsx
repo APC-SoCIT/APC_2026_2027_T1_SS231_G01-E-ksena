@@ -12,7 +12,8 @@ import { getDirections } from '../../services/mapbox';
 import { Phone, MessageSquare, Video, Zap } from 'lucide-react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useAuth } from '../../context/AuthContext';
-import { consumePendingResponderRoute } from '../../services/ReportService';
+import { consumePendingResponderRoute, ResponderRoutePayload } from '../../services/ReportService';
+import { clearActiveIncident, loadActiveIncident, saveActiveIncident } from '../../services/activeIncidentStorage';
 import Constants from 'expo-constants';
 import * as SMS from 'expo-sms';
 import * as Location from 'expo-location';
@@ -44,6 +45,21 @@ const HomeScreen: React.FC = () => {
     state.location.latitude || 14.5310248,
   ]);
 
+  // Keep the latest active route available after an accidental app close,
+  // including live responder position and classification updates.
+  useEffect(() => {
+    if (!responderData || !state.auth.user?.id || responderData.status === 'resolved') return;
+    void saveActiveIncident(state.auth.user.id, {
+      incidentId: responderData.incidentId,
+      userLocation: responderData.userLocation,
+      responderStart: responderData.responderLocation,
+      responderBase: responderData.responderBase,
+      dispatcherName: responderData.dispatcherName,
+      dispatcherPhone: responderData.dispatcherPhone ?? undefined,
+      serviceType: responderData.serviceType,
+    });
+  }, [responderData, state.auth.user?.id]);
+
   // 1. Instantly sync whenever a new route is dispatched
   useEffect(() => {
     if (pendingResponderRoute) {
@@ -57,8 +73,11 @@ const HomeScreen: React.FC = () => {
         dispatcherPhone: pendingResponderRoute.dispatcherPhone,
         serviceType: pendingResponderRoute.serviceType,
       });
+      if (state.auth.user?.id) {
+        void saveActiveIncident(state.auth.user.id, pendingResponderRoute);
+      }
     }
-  }, [pendingResponderRoute]);
+  }, [pendingResponderRoute, state.auth.user?.id]);
 
   // 2. Also check on screen focus or restore active incident from Supabase if app was reloaded
   useEffect(() => {
@@ -74,7 +93,26 @@ const HomeScreen: React.FC = () => {
           dispatcherPhone: pending.dispatcherPhone,
           serviceType: pending.serviceType,
         });
+        if (state.auth.user?.id) {
+          void saveActiveIncident(state.auth.user.id, pending);
+        }
         return;
+      }
+
+      if (!responderData && state.auth.user?.id) {
+        const persisted = await loadActiveIncident(state.auth.user.id);
+        if (persisted) {
+          setResponderData({
+            incidentId: persisted.incidentId,
+            userLocation: persisted.userLocation,
+            responderLocation: persisted.responderStart,
+            responderBase: persisted.responderBase,
+            dispatcherName: persisted.dispatcherName || 'Emergency Responder',
+            dispatcherPhone: persisted.dispatcherPhone,
+            serviceType: persisted.serviceType,
+          });
+          return;
+        }
       }
 
       // If not in memory, query Supabase for citizen's most recent active incident
@@ -118,14 +156,14 @@ const HomeScreen: React.FC = () => {
               const rLat = activeDispatch.current_lat || resp?.responder_location_lat || (latestIncident.incident_location_lat + 0.005);
               const rLng = activeDispatch.current_lng || resp?.responder_location_lng || (latestIncident.incident_location_lng - 0.005);
 
-              setResponderData({
+              const restoredRoute: ResponderRoutePayload = {
                 incidentId: latestIncident.incident_id,
                 userLocation: {
                   latitude: parseFloat(latestIncident.incident_location_lat),
                   longitude: parseFloat(latestIncident.incident_location_lng),
                   address: latestIncident.location_address,
                 },
-                responderLocation: {
+                responderStart: {
                   latitude: parseFloat(rLat),
                   longitude: parseFloat(rLng),
                 },
@@ -140,8 +178,20 @@ const HomeScreen: React.FC = () => {
                 // The dispatch classification belongs to the incident. The responder's
                 // specialty is only a fallback for older rows without service_type.
                 serviceType: activeDispatch.service_type || resp?.service_type,
+              };
+              setResponderData({
+                incidentId: restoredRoute.incidentId,
+                userLocation: restoredRoute.userLocation,
+                responderLocation: restoredRoute.responderStart,
+                responderBase: restoredRoute.responderBase,
+                dispatcherName: restoredRoute.dispatcherName || 'Emergency Responder',
+                dispatcherPhone: restoredRoute.dispatcherPhone,
+                serviceType: restoredRoute.serviceType,
                 status: activeDispatch.status,
               });
+              if (state.auth.user?.id) {
+                void saveActiveIncident(state.auth.user.id, restoredRoute);
+              }
             }
           }
         } catch (restoreErr) {
@@ -284,6 +334,11 @@ const HomeScreen: React.FC = () => {
 
         if (dispatchRow && !error) {
           console.log('[DISPATCH] Initial row loaded:', dispatchRow);
+          if (dispatchRow.status === 'resolved') {
+            setResponderData(null);
+            await clearActiveIncident();
+            return;
+          }
           setResponderData((prev) => {
             if (!prev) return null;
             const updatedLocation =
@@ -335,6 +390,7 @@ const HomeScreen: React.FC = () => {
                       dispatchChannelRef.current = null;
                     }
                     setResponderData(null);
+                    void clearActiveIncident();
                   },
                 },
               ]
@@ -369,7 +425,26 @@ const HomeScreen: React.FC = () => {
     };
   }, [responderData?.incidentId]);
 
-  const handleEmergencyReport = () => {
+  const handleEmergencyReport = async () => {
+    if (responderData && responderData.status !== 'resolved') {
+      Alert.alert('Active emergency', 'Only one emergency report can be active at a time.');
+      return;
+    }
+
+    const servicesEnabled = await Location.hasServicesEnabledAsync();
+    const permission = await Location.getForegroundPermissionsAsync();
+    if (!servicesEnabled || permission.status !== 'granted') {
+      Alert.alert('Location required', 'Enable location services and allow location access before sending a report.');
+      return;
+    }
+
+    try {
+      const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      setLocation(current.coords.latitude, current.coords.longitude, state.location.address || undefined);
+    } catch {
+      Alert.alert('Location unavailable', 'Could not get your current location. Please try again.');
+      return;
+    }
     (navigation as any).navigate('Video');
   };
 

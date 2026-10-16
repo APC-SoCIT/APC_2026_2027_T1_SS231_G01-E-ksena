@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useNavigation } from '@react-navigation/native';
+import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { ArrowLeft, RotateCcw, Video as VideoIcon, VideoOff } from 'lucide-react-native';
 import React, { useEffect, useRef, useState } from 'react';
@@ -15,13 +15,16 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../../context/AuthContext';
 import { MainStackParamList } from '../../navigation/MainStack';
 import { sendVideoReport } from '../../services/ReportService';
+import { hasActiveIncident } from '../../services/activeIncidentStorage';
 import { supabase } from '../../services/supabaseClient';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
+import * as Location from 'expo-location';
 
 type VideoCameraScreenNavigationProp = StackNavigationProp<MainStackParamList, 'MainTabs'>;
 
 const VideoCameraScreen: React.FC = () => {
   const navigation = useNavigation<VideoCameraScreenNavigationProp>();
+  const isFocused = useIsFocused();
   const { state } = useAuth();
   
   const cameraRef = useRef<CameraView>(null);
@@ -34,6 +37,7 @@ const VideoCameraScreen: React.FC = () => {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const submissionInProgressRef = useRef(false);
 
 
   useEffect(() => {
@@ -87,6 +91,19 @@ const VideoCameraScreen: React.FC = () => {
     };
   }, []);
 
+  // Bottom-tab screens remain mounted when another tab or modal is opened.
+  // Release Expo Camera so react-native-webrtc can acquire the same hardware.
+  useEffect(() => {
+    if (!isFocused) {
+      cameraRef.current?.stopRecording();
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      setIsRecording(false);
+    }
+  }, [isFocused]);
+
   const toggleCameraType = () => {
     setCameraType(current => (current === 'back' ? 'front' : 'back'));
   };
@@ -105,8 +122,25 @@ const VideoCameraScreen: React.FC = () => {
 
   const startEmergencyRecording = async () => {
     if (!cameraRef.current) return;
+    if (submissionInProgressRef.current) return;
+
+    const userId = state.auth.user?.id;
+    if (userId && await hasActiveIncident(userId)) {
+      Alert.alert('Active emergency', 'Only one emergency report can be active at a time.');
+      navigation.navigate('MainTabs' as any, { screen: 'Home' } as any);
+      return;
+    }
+
+    const servicesEnabled = await Location.hasServicesEnabledAsync();
+    const permission = await Location.getForegroundPermissionsAsync();
+    if (!servicesEnabled || permission.status !== 'granted') {
+      Alert.alert('Location required', 'Enable location services and allow location access before recording a report.');
+      return;
+    }
     
     try {
+      submissionInProgressRef.current = true;
+      const freshLocation = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
       setIsRecording(true);
       setElapsedSeconds(0);
       console.log('[FRONTEND] Starting video recording (10 seconds max)...');
@@ -160,8 +194,8 @@ const VideoCameraScreen: React.FC = () => {
       console.log('[FRONTEND] Upload complete! Public URL:', publicUrl);
 
       // 3. Create Incident in Database (Backend will call AI Microservice with this URL)
-      const { latitude, longitude, address } = state.location;
-      if (!latitude || !longitude) throw new Error('Location is missing');
+      const { latitude, longitude } = freshLocation.coords;
+      const { address } = state.location;
       
       const userPhoneNumber = state.auth.user?.phone ? String(state.auth.user.phone) : 'unknown';
       const userId = state.auth.user?.id;
@@ -176,6 +210,7 @@ const VideoCameraScreen: React.FC = () => {
       );
       
       setIsAnalyzing(false);
+      submissionInProgressRef.current = false;
 
       if (!result.success || !result.report?.id) {
          throw new Error(`[URL: ${process.env.EXPO_PUBLIC_API_BASE_URL}] Failed to create incident on server: ${result.message}`);
@@ -187,7 +222,10 @@ const VideoCameraScreen: React.FC = () => {
         : 'Emergency Incident (Responders Notified)';
       
       Alert.alert('Emergency Detected!', `AI Classification complete.\n\nClassified: ${aiResult}\n\nHelp is on the way!`, [
-        { text: 'OK', onPress: () => navigation.navigate('MainTabs' as any) }
+        {
+          text: 'OK',
+          onPress: () => navigation.navigate('MainTabs' as any, { screen: 'Home' } as any)
+        }
       ]);
       
     } catch (err) {
@@ -198,6 +236,7 @@ const VideoCameraScreen: React.FC = () => {
        console.error('Recording/Upload Error:', err);
        setIsRecording(false);
        setIsAnalyzing(false);
+       submissionInProgressRef.current = false;
        Alert.alert('Emergency Failed', String(err));
     }
   };
@@ -242,14 +281,16 @@ const VideoCameraScreen: React.FC = () => {
       </View>
 
       <View style={styles.cameraContainer}>
-        <CameraView
-          ref={cameraRef}
-          style={styles.camera}
-          facing={cameraType}
-          mode="video"
-          videoQuality="480p"
-          videoBitrate={1500000}
-        />
+        {isFocused && (
+          <CameraView
+            ref={cameraRef}
+            style={styles.camera}
+            facing={cameraType}
+            mode="video"
+            videoQuality="480p"
+            videoBitrate={1500000}
+          />
+        )}
 
         {isRecording && (
           <>

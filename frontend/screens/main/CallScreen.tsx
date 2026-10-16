@@ -7,6 +7,14 @@ import { PhoneOff, SwitchCamera } from 'lucide-react-native';
 import { supabase } from '../../services/supabaseClient';
 import { useAuth } from '../../context/AuthContext';
 
+const turnUrls = (process.env.EXPO_PUBLIC_TURN_URL || '')
+  .split(',')
+  .map(url => url.trim())
+  .filter(Boolean);
+const turnUsername = process.env.EXPO_PUBLIC_TURN_USERNAME || '';
+const turnCredential = process.env.EXPO_PUBLIC_TURN_CREDENTIAL || '';
+const hasTurnConfiguration = turnUrls.length > 0 && !!turnUsername && !!turnCredential;
+
 const configuration = {
   iceServers: [
     {
@@ -18,16 +26,9 @@ const configuration = {
     {
       urls: 'stun:stun2.l.google.com:19302'
     },
-    {
-      urls: [
-        'turn:openrelay.metered.ca:80',
-        'turn:openrelay.metered.ca:443',
-        'turn:openrelay.metered.ca:443?transport=tcp',
-        'turns:openrelay.metered.ca:443?transport=tcp'
-      ],
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    }
+    ...(hasTurnConfiguration
+      ? [{ urls: turnUrls, username: turnUsername, credential: turnCredential }]
+      : [])
   ],
   iceCandidatePoolSize: 10
 };
@@ -79,6 +80,10 @@ export default function CallScreen() {
     callSessionRef.current = callSession;
 
     try {
+      if (!hasTurnConfiguration) {
+        console.warn('[WebRTC] TURN is not configured; cross-network calls may fail.');
+      }
+
       // 1. Get local media stream
       const stream = await mediaDevices.getUserMedia({
         audio: true,

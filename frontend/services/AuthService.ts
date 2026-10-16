@@ -146,9 +146,11 @@ export const verifyEmailOtp = async (email: string, token: string, fullName?: st
 
 export const logout = async (): Promise<void> => {
   await AsyncStorage.removeItem(MOCK_SESSION_KEY).catch(() => {});
-  const { error } = await supabase.auth.signOut();
+  // Local scope removes the persisted device session without requiring the
+  // auth server to be reachable (airplane mode/offline logout).
+  const { error } = await supabase.auth.signOut({ scope: 'local' });
   if (error) {
-    throw new Error(error.message);
+    console.warn('[AuthService] Local sign-out reported an error:', error.message);
   }
 };
 
