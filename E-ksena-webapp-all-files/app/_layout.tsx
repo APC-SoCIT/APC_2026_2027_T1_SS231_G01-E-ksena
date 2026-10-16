@@ -34,10 +34,13 @@ function useRecoveryRedirect() {
 }
 
 function RootStack() {
-  const { isResponder, isAdminOnly } = useAuth();
+  const { isResponder, isAdminOnly, mfaStatus } = useAuth();
   // An admin with no service is let in as well; which screens it then finds
-  // inside is decided by the drawer.
-  const canEnter = isResponder || isAdminOnly;
+  // inside is decided by the drawer. Either way the second sign-in step has to
+  // be done first: until then the only screen is the code screen.
+  const signedIn = isResponder || isAdminOnly;
+  const canEnter = signedIn && mfaStatus === 'ok';
+  const needsMfa = signedIn && mfaStatus !== 'ok';
   useRecoveryRedirect();
   const headerOptions = {
     headerStyle: { backgroundColor: BRAND_RED },
@@ -50,7 +53,10 @@ function RootStack() {
   // screen, so the URL changed but nothing rendered - the blank page after logout.
   return (
     <Stack screenOptions={headerOptions}>
-      <Stack.Protected guard={!canEnter}>
+      <Stack.Protected guard={needsMfa}>
+        <Stack.Screen name="mfa" options={{ title: 'Two-step verification', headerShown: false }} />
+      </Stack.Protected>
+      <Stack.Protected guard={!signedIn}>
         <Stack.Screen name="index" options={{ title: 'Responder log in', headerShown: false }} />
         <Stack.Screen name="signup" options={{ title: 'Responder registration', headerShown: true }} />
         <Stack.Screen name="verify" options={{ title: 'Verify email', headerShown: true }} />

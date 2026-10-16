@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import type { Session } from '@supabase/supabase-js';
 
 import { supabase } from '@/lib/supabase';
@@ -12,6 +12,8 @@ export type ResponderUser = {
   fullName?: string;
   phone?: string;
 };
+
+export type MfaStatus = 'unknown' | 'enroll' | 'verify' | 'ok';
 
 export type ProfileUpdate = Partial<Pick<ResponderUser, 'username' | 'fullName' | 'phone'>>;
 
@@ -31,6 +33,13 @@ type AuthContextValue = {
   /** The signed-in account's email. Set even when `user` is null, as it is for an admin-only account. */
   accountEmail: string | null;
   user: ResponderUser | null;
+  /**
+   * The second sign-in step (S-02). 'enroll': the account has no authenticator
+   * set up yet; 'verify': it has one and this session has not entered a code;
+   * 'ok': done. Every account must reach 'ok' before the dashboard opens.
+   */
+  mfaStatus: MfaStatus;
+  refreshMfa: () => Promise<void>;
   loading: boolean;
   logout: () => Promise<void>;
   updateProfile: (updates: ProfileUpdate) => Promise<void>;
@@ -96,6 +105,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [uid]);
 
+  // Kept with the account and session it is about, like the admin answer, so
+  // a result for one sign-in is never read as another's.
+  const [mfaCheck, setMfaCheck] = useState<{ key: string; status: MfaStatus } | null>(null);
+  const mfaKey = uid ? `${uid}:${session?.access_token ?? ''}` : '';
+
+  const refreshMfa = useCallback(async () => {
+    if (!uid) return;
+    const key = mfaKey;
+    const { data, error } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+    let status: MfaStatus;
+    if (error || !data) {
+      // Unknown is treated as unfinished, never as passed.
+      status = 'verify';
+    } else if (data.currentLevel === 'aal2') {
+      status = 'ok';
+    } else if (data.nextLevel === 'aal2') {
+      status = 'verify';
+    } else {
+      status = 'enroll';
+    }
+    setMfaCheck({ key, status });
+  }, [uid, mfaKey]);
+
+  useEffect(() => {
+    refreshMfa();
+  }, [refreshMfa]);
+
+  // While a re-check for the same account is running - the session token is
+  // renewed about once an hour - the last answer stands, so the dashboard is
+  // not torn down and rebuilt each time. A different account starts unknown.
+  const sameAccount = !!uid && !!mfaCheck && mfaCheck.key.startsWith(`${uid}:`);
+  const mfaKnown = !uid || sameAccount;
+  const mfaStatus: MfaStatus = sameAccount && mfaCheck ? mfaCheck.status : 'unknown';
+
   const adminKnown = !uid || adminCheck?.uid === uid;
   const isAdmin = !!uid && adminCheck?.uid === uid && adminCheck.isAdmin;
   const isAdminOnly = isAdmin && !user;
@@ -106,7 +149,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // happens once. After it, a login changes the screens in place - taking the
   // whole app down to a spinner in the middle of one would throw away the
   // login screen along with whatever it was about to say.
-  const settled = !sessionLoading && adminKnown;
+  const settled = !sessionLoading && adminKnown && mfaKnown;
   const [booted, setBooted] = useState(false);
   useEffect(() => {
     if (settled) setBooted(true);
@@ -141,6 +184,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAdminOnly,
         accountEmail: session?.user?.email ?? null,
         user,
+        mfaStatus,
+        refreshMfa,
         loading,
         logout,
         updateProfile,
