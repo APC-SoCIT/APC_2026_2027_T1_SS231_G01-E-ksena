@@ -213,7 +213,23 @@ const VideoCameraScreen: React.FC = () => {
       submissionInProgressRef.current = false;
 
       if (!result.success || !result.report?.id) {
-         throw new Error(`[URL: ${process.env.EXPO_PUBLIC_API_BASE_URL}] Failed to create incident on server: ${result.message}`);
+         // The backend is authoritative: local storage may be empty after a
+         // reinstall even though this citizen still has an active dispatch.
+         if (result.errorCode === 'ACTIVE_INCIDENT_EXISTS') {
+           await supabase.storage.from('incident-videos').remove([fileName]);
+           Alert.alert(
+             'Active emergency',
+             'You already have an emergency report being handled. You can submit another report after it is resolved.',
+             [{
+               text: 'View emergency',
+               onPress: () => navigation.navigate('MainTabs' as any, { screen: 'Home' } as any),
+             }]
+           );
+           return;
+         }
+
+         await supabase.storage.from('incident-videos').remove([fileName]);
+         throw new Error(result.message || 'The emergency report could not be submitted. Please try again.');
       }
       
       const rawResult = result.report?.description?.replace(/Emergency\s*null\s*incident/gi, '')?.trim();

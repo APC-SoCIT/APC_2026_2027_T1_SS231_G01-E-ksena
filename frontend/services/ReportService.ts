@@ -41,6 +41,9 @@ interface ApiResponse<T> {
   data?: T;
   message?: string;
   error?: string;
+  status?: number;
+  code?: string;
+  incidentId?: string;
 }
 
 class ApiClient {
@@ -84,9 +87,18 @@ class ApiClient {
       clearTimeout(id);
 
       if (!response.ok) {
+        let errorBody: any = null;
+        try {
+          errorBody = await response.json();
+        } catch {
+          // Some upstream failures return HTML or an empty response.
+        }
         return {
           success: false,
-          error: `HTTP error! status: ${response.status} @ ${url}`,
+          status: response.status,
+          code: errorBody?.code,
+          incidentId: errorBody?.incident_id,
+          error: errorBody?.error || errorBody?.message || `Request failed with status ${response.status}.`,
         };
       }
 
@@ -222,6 +234,8 @@ export interface ReportResponse {
   success: boolean;
   report: EmergencyReport;
   message: string;
+  errorCode?: string;
+  existingIncidentId?: string;
 }
 
 export interface IncidentListResponse {
@@ -292,6 +306,8 @@ export const sendVideoReport = async (
         success: false,
         report: {} as EmergencyReport,
         message: createResp.error || 'Network connection failed.',
+        errorCode: createResp.code,
+        existingIncidentId: createResp.incidentId,
       };
     }
 

@@ -247,10 +247,12 @@ def blur_faces_in_video(input_path, output_path):
     return True, total_faces, frame_count
 
 
+@app.route('/', methods=['GET'])
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({
         "status": "ok",
+        "service": "E-KSENA AI Service",
         "model_loaded": model is not None,
         "face_cascade_loaded": face_cascade is not None and not face_cascade.empty()
     })
