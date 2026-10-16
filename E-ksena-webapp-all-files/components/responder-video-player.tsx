@@ -9,6 +9,7 @@ import {
   WHITE,
   BORDER,
   TEXT_SECONDARY,
+  TEXT_PRIMARY,
   SUCCESS,
   BRAND_RED,
 } from '@/constants/theme';
@@ -115,6 +116,12 @@ export function ResponderVideoPlayer({
   const [muted, setMuted] = useState(true);
   const [diag, setDiag] = useState<string | null>(null);
   const [recordingFailed, setRecordingFailed] = useState(false);
+  // The responder's own microphone, sent back to the caller on the audio
+  // channel the phone's call already opened.
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const audioSenderRef = useRef<RTCRtpSender | null>(null);
+  const [micOn, setMicOn] = useState(false);
+  const [micError, setMicError] = useState<string | null>(null);
 
   useEffect(() => {
     setRecordingFailed(false);
@@ -170,6 +177,7 @@ export function ResponderVideoPlayer({
 
     const closePc = () => {
       if (!pc) return;
+      audioSenderRef.current = null;
       pc.ontrack = null;
       pc.onicecandidate = null;
       pc.onconnectionstatechange = null;
@@ -351,6 +359,24 @@ export function ResponderVideoPlayer({
         await current.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => undefined);
       }
 
+      // Answer the phone's audio channel as two-way, so the responder can be
+      // heard. Agreeing to send now, even with no microphone yet, is what
+      // lets the microphone be switched on later without setting the call up
+      // again: it only has to be put in place.
+      const audio = current
+        .getTransceivers()
+        .find((t) => t.receiver.track && t.receiver.track.kind === 'audio');
+      if (audio) {
+        audio.direction = 'sendrecv';
+        audioSenderRef.current = audio.sender;
+        const micTrack = micStreamRef.current?.getAudioTracks()[0];
+        if (micTrack && micTrack.readyState === 'live') {
+          await audio.sender.replaceTrack(micTrack).catch(() => undefined);
+        }
+      } else {
+        audioSenderRef.current = null;
+      }
+
       const answer = await current.createAnswer();
       await current.setLocalDescription(answer);
       await gatheringDone(current);
@@ -411,6 +437,12 @@ export function ResponderVideoPlayer({
       if (videoRef.current) videoRef.current.srcObject = null;
       closePc();
       supabase.removeChannel(channel);
+      // Leaving the incident turns the microphone off for good, so the
+      // browser's recording indicator does not stay on.
+      micStreamRef.current?.getTracks().forEach((track) => track.stop());
+      micStreamRef.current = null;
+      setMicOn(false);
+      setMicError(null);
     };
   }, [incidentId]);
 
@@ -433,7 +465,74 @@ export function ResponderVideoPlayer({
     );
   }
 
+  // Asks for the microphone the first time, then just switches it on. The
+  // browser only allows the request from a click, which is why this runs from
+  // Accept Call and the microphone button, never by itself.
+  const startMic = async () => {
+    setMicError(null);
+    let track = micStreamRef.current?.getAudioTracks()[0];
+    if (!track || track.readyState !== 'live') {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setMicError('This browser cannot use a microphone here. Open the dashboard over https or on localhost.');
+        return;
+      }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        });
+        micStreamRef.current = stream;
+        track = stream.getAudioTracks()[0];
+      } catch (err: unknown) {
+        const name = err && typeof err === 'object' && 'name' in err ? String((err as { name: unknown }).name) : '';
+        setMicError(
+          name === 'NotAllowedError'
+            ? 'The microphone is blocked. Allow it for this site in the browser (the icon beside the address), then press Unmute.'
+            : name === 'NotFoundError'
+              ? 'No microphone was found on this computer.'
+              : `Could not start the microphone: ${errorText(err)}`
+        );
+        setMicOn(false);
+        return;
+      }
+    }
+    if (!track) return;
+    track.enabled = true;
+    const sender = audioSenderRef.current;
+    if (!sender) {
+      setMicError(
+        "The caller's app did not open an audio channel, so they cannot hear you. They can still be heard here."
+      );
+      setMicOn(false);
+      return;
+    }
+    try {
+      await sender.replaceTrack(track);
+      setMicOn(true);
+    } catch (err: unknown) {
+      setMicError(`Could not send your voice to the caller: ${errorText(err)}`);
+      setMicOn(false);
+    }
+  };
+
+  // Mute keeps the microphone ready, so unmuting is instant; the caller hears silence meanwhile.
+  const muteMic = () => {
+    micStreamRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = false;
+    });
+    setMicOn(false);
+  };
+
+  const releaseMic = () => {
+    micStreamRef.current?.getTracks().forEach((track) => track.stop());
+    micStreamRef.current = null;
+    setMicOn(false);
+    setMicError(null);
+  };
+
   const handleAcceptCall = () => {
+    // Accepting is the click that both plays the caller and opens the line
+    // back to them, so the responder can speak straight away.
+    void startMic();
     const video = videoRef.current;
     if (video) {
       if (!video.srcObject && activeStreamRef.current) {
@@ -453,6 +552,7 @@ export function ResponderVideoPlayer({
   };
 
   const handleEndCall = () => {
+    releaseMic();
     if (activeStreamRef.current) {
       activeStreamRef.current.getTracks().forEach((track) => track.stop());
       activeStreamRef.current = null;
@@ -509,6 +609,17 @@ export function ResponderVideoPlayer({
             >
               <MaterialIcons name="call" size={16} color={WHITE} />
               <Text style={styles.acceptHeaderBtnText}>Accept Call</Text>
+            </Pressable>
+          )}
+          {isLive && (
+            <Pressable
+              style={[styles.micBtn, micOn ? styles.micBtnOn : styles.micBtnOff]}
+              onPress={() => (micOn ? muteMic() : void startMic())}
+              accessibilityRole="button"
+              accessibilityLabel={micOn ? 'Mute your microphone' : 'Unmute your microphone'}
+            >
+              <MaterialIcons name={micOn ? 'mic' : 'mic-off'} size={16} color={micOn ? WHITE : TEXT_PRIMARY} />
+              <Text style={[styles.micBtnText, micOn && styles.micBtnTextOn]}>{micOn ? 'Mute' : 'Unmute'}</Text>
             </Pressable>
           )}
           {isLive && (
@@ -605,6 +716,8 @@ export function ResponderVideoPlayer({
         ) : null}
       </View>
 
+      {isLive && micOn ? <Text style={styles.noteText}>Your microphone is on. The caller can hear you.</Text> : null}
+      {micError && (isLive || isConnecting) ? <Text style={styles.errorText}>{micError}</Text> : null}
       {!isLive && liveNote ? <Text style={styles.noteText}>{liveNote}</Text> : null}
       {errorDetail ? <Text style={styles.errorText}>{errorDetail}</Text> : null}
       {diag && (state === 'error' || isConnecting) ? <Text style={styles.diagText}>Call details: {diag}</Text> : null}
@@ -653,6 +766,31 @@ const styles = StyleSheet.create({
   acceptHeaderBtnText: {
     fontSize: FontSizes.xs,
     fontWeight: '700',
+    color: WHITE,
+  },
+  micBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 5,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+  },
+  micBtnOn: {
+    backgroundColor: SUCCESS,
+    borderColor: SUCCESS,
+  },
+  micBtnOff: {
+    backgroundColor: WHITE,
+    borderColor: BORDER,
+  },
+  micBtnText: {
+    fontSize: FontSizes.xs,
+    fontWeight: '700',
+    color: TEXT_PRIMARY,
+  },
+  micBtnTextOn: {
     color: WHITE,
   },
   endHeaderBtn: {
