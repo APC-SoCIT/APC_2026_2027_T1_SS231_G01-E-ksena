@@ -2,6 +2,7 @@ import 'dotenv/config';
 
 export default {
   expo: {
+    owner: "manininini",
     name: "E-KSENA",
     slug: "e-ksena-emergency",
     version: "1.0.0",
@@ -90,7 +91,7 @@ export default {
     extra: {
       router: {},
       eas: {
-        projectId: "562e3616-382d-44e4-9146-28b81f6f625d"
+        projectId: "20560ac2-461b-4a8f-a1e6-c400b8e7466d"
       }
     },
     experiments: {
