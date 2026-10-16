@@ -4,6 +4,8 @@ import { useAuth } from '@/context/auth';
 import { useRoleTheme } from '@/context/role-theme';
 import { PrimaryButton } from '@/components/primary-button';
 import { PhoneInput, toE164, fromE164, isValidPhone } from '@/components/phone-input';
+import { changePassword } from '@/lib/auth-service';
+import { passwordProblems } from '@/lib/password';
 import {
   Spacing,
   FontSizes,
@@ -82,6 +84,81 @@ export default function ProfileScreen() {
     }
   };
 
+  const [currentPw, setCurrentPw] = useState('');
+  const [newPw, setNewPw] = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
+  const [pwNote, setPwNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [pwSaving, setPwSaving] = useState(false);
+
+  // Changing the password asks for the current one first, so an unlocked
+  // browser left open is not enough to take the account over.
+  const handleChangePassword = async () => {
+    setPwNote(null);
+    if (!currentPw || !newPw || !confirmPw) {
+      setPwNote({ ok: false, text: 'Fill in your current password and the new password twice.' });
+      return;
+    }
+    if (newPw !== confirmPw) {
+      setPwNote({ ok: false, text: 'The new passwords do not match.' });
+      return;
+    }
+    const problems = passwordProblems(newPw);
+    if (problems.length) {
+      setPwNote({ ok: false, text: `The new password needs ${problems.join(', ')}.` });
+      return;
+    }
+    setPwSaving(true);
+    try {
+      await changePassword(currentPw, newPw);
+      setCurrentPw('');
+      setNewPw('');
+      setConfirmPw('');
+      setPwNote({ ok: true, text: 'Your password has been changed.' });
+    } catch (err) {
+      setPwNote({ ok: false, text: err instanceof Error ? err.message : 'Could not change the password.' });
+    } finally {
+      setPwSaving(false);
+    }
+  };
+
+  const passwordSection = (
+    <View style={[styles.card, CardShadow]}>
+      <Text style={styles.sectionTitle}>Change password</Text>
+      {(
+        [
+          ['Current password', currentPw, setCurrentPw],
+          ['New password', newPw, setNewPw],
+          ['Confirm new password', confirmPw, setConfirmPw],
+        ] as const
+      ).map(([label, value, setValue]) => (
+        <View key={label} style={styles.fieldRow}>
+          <Text style={styles.label}>{label}</Text>
+          <TextInput
+            style={styles.input}
+            value={value}
+            onChangeText={setValue}
+            placeholder={label}
+            placeholderTextColor={TEXT_SECONDARY}
+            secureTextEntry
+            autoCapitalize="none"
+            accessibilityLabel={label}
+          />
+        </View>
+      ))}
+      {pwNote ? (
+        <View style={pwNote.ok ? styles.successBox : styles.errorBox}>
+          <Text style={pwNote.ok ? styles.successText : styles.errorText}>{pwNote.text}</Text>
+        </View>
+      ) : null}
+      <PrimaryButton
+        title={pwSaving ? 'Changing…' : 'Change password'}
+        onPress={handleChangePassword}
+        style={styles.saveBtn}
+        disabled={pwSaving}
+      />
+    </View>
+  );
+
   const logoutSection = (
     <>
       {logoutError ? (
@@ -113,7 +190,8 @@ export default function ProfileScreen() {
             <Text style={styles.value}>{accountEmail}</Text>
           </View>
         </View>
-        {logoutSection}
+        {passwordSection}
+      {logoutSection}
       </ScrollView>
     );
   }
@@ -176,6 +254,7 @@ export default function ProfileScreen() {
         <PrimaryButton title={saving ? 'Saving…' : 'Save changes'} onPress={handleSave} style={styles.saveBtn} disabled={saving} />
       </View>
 
+      {passwordSection}
       {logoutSection}
     </ScrollView>
   );
@@ -211,6 +290,12 @@ const styles = StyleSheet.create({
     flexDirection: Platform.OS === 'web' ? 'row' : 'column',
     alignItems: Platform.OS === 'web' ? 'center' : 'stretch',
     gap: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  sectionTitle: {
+    fontSize: FontSizes.body,
+    fontWeight: '600',
+    color: TEXT_PRIMARY,
     marginBottom: Spacing.md,
   },
   lastFieldRow: {

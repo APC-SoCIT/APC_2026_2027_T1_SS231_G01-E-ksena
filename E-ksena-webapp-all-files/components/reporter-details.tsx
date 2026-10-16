@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { supabase } from '@/lib/supabase';
 import {
   type ReportRef,
@@ -47,6 +47,7 @@ type Props = {
 export function ReporterDetails({ reports }: Props) {
   const reportKey = reports.map((report) => report.id).join(',');
   const [state, setState] = useState<LoadState>({ phase: 'loading' });
+  const [attempt, setAttempt] = useState(0);
   const shownFor = useRef<string | null>(null);
 
   useEffect(() => {
@@ -79,7 +80,7 @@ export function ReporterDetails({ reports }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [reportKey]);
+  }, [reportKey, attempt]);
 
   const reporters = state.phase === 'ready' ? groupReporters(state.records, reports) : [];
 
@@ -90,7 +91,20 @@ export function ReporterDetails({ reports }: Props) {
       {state.phase === 'loading' ? <Text style={styles.muted}>Looking up who reported this…</Text> : null}
 
       {state.phase === 'error' ? (
-        <Text style={styles.error}>Could not load the reporter: {state.message}</Text>
+        <View>
+          <Text style={styles.error}>Could not load the reporter: {state.message}</Text>
+          <Pressable
+            onPress={() => {
+              shownFor.current = null;
+              setAttempt((n) => n + 1);
+            }}
+            style={styles.retryBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Try loading the reporter again"
+          >
+            <Text style={styles.retryText}>Retry</Text>
+          </Pressable>
+        </View>
       ) : null}
 
       {state.phase === 'ready' && reporters.length === 0 ? (
@@ -141,6 +155,20 @@ const styles = StyleSheet.create({
     fontSize: FontSizes.sm,
     color: DANGER,
     lineHeight: 20,
+  },
+  retryBtn: {
+    alignSelf: 'flex-start',
+    marginTop: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    paddingHorizontal: Spacing.md,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: Radius.md,
+  },
+  retryText: {
+    fontSize: FontSizes.sm,
+    fontWeight: '600',
+    color: TEXT_PRIMARY,
   },
   another: {
     marginTop: Spacing.md,

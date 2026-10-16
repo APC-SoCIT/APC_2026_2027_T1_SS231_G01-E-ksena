@@ -31,6 +31,19 @@ export async function setTripStatus(reportIds: string[], status: 'arrived' | 're
   return error ? explain(error.message) : null;
 }
 
+/**
+ * Cancel: the report goes back to "matched" so it can be accepted again, and
+ * the trip back to "dispatched", which tells the reporter's app the responder
+ * is no longer on the way.
+ */
+export async function cancelTrip(reportIds: string[]): Promise<string | null> {
+  const { error } = await supabase.rpc('dispatch_cancel', { report_ids: reportIds });
+  if (!error) return null;
+  return /dispatch_cancel|schema cache|could not find the function/i.test(error.message)
+    ? `${error.message} Run supabase/ai-results-and-dispatch-cancel.sql in the Supabase SQL Editor.`
+    : error.message;
+}
+
 /** Where the responder is now, written to every trip of theirs still under way. */
 export async function shareTripPosition(lat: number, lng: number): Promise<string | null> {
   const { error } = await supabase.rpc('dispatch_report_position', { p_lat: lat, p_lng: lng });

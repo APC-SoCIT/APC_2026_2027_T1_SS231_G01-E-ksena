@@ -37,7 +37,8 @@ import { GOOGLE_MAPS_API_KEY } from '@/lib/env';
 import { PrimaryButton } from '@/components/primary-button';
 import { recordDispatchAction } from '@/lib/audit';
 import { notifyReportersAccepted, type AcceptanceNotice } from '@/lib/sms-messages';
-import { startTrip, setTripStatus, shareTripPosition, SHARE_EVERY_MS, SHARE_MIN_MOVE_KM } from '@/lib/dispatch';
+import { startTrip, setTripStatus, shareTripPosition, cancelTrip, SHARE_EVERY_MS, SHARE_MIN_MOVE_KM } from '@/lib/dispatch';
+import { AiResult } from '@/components/ai-result';
 import { ResponderVideoPlayer } from '@/components/responder-video-player';
 import { ReporterDetails } from '@/components/reporter-details';
 import { publicVideoUrl } from '@/lib/incident-video';
@@ -477,6 +478,41 @@ export default function MapScreen() {
 
   // Arrived is for the reporter's app, which shows it. The report itself stays
   // "responding" until Done.
+  // Cancel takes the responder off the trip: the report goes back to the
+  // list as unaccepted, and the reporter's app stops showing them on the way.
+  const handleCancelDispatch = async (group: ReportGroup<EmergencyReport>) => {
+    if (statusBusy.current) return;
+    statusBusy.current = true;
+    setStatusError(null);
+    const ids = group.members.map((m) => m.id);
+    try {
+      const error = await cancelTrip(ids);
+      if (error) {
+        setStatusError(`Could not cancel the dispatch: ${error}`);
+        return;
+      }
+      setReports((prev) => prev.map((r) => (ids.includes(r.id) ? { ...r, status: 'matched' } : r)));
+      setArrivedKeys((prev) => prev.filter((k) => k !== group.key));
+      setTripNote(null);
+      setReporterNote(null);
+      const auditError = await recordDispatchAction(
+        {
+          action: 'dispatch_cancel',
+          previousValue: 'responding',
+          newValue: 'matched',
+          reportIds: ids,
+          detail: { incident_id: group.lead.incidentId, grouped_reports: ids.length },
+        },
+        { username: user?.username, role: user?.role }
+      );
+      if (auditError) {
+        setStatusError(`Dispatch cancelled, but it was not recorded in the audit log: ${auditError}`);
+      }
+    } finally {
+      statusBusy.current = false;
+    }
+  };
+
   const handleArrived = async (group: ReportGroup<EmergencyReport>) => {
     if (statusBusy.current) return;
     statusBusy.current = true;
@@ -710,6 +746,7 @@ export default function MapScreen() {
             {route?.duration?.text ? <Text style={styles.etaAway}>{route.duration.text} away</Text> : null}
           </View>
           <Text style={styles.selectedDetail}>{locationText}</Text>
+          <AiResult reportIds={selectedReportRefs.map((r) => r.id)} />
           {typedDetails.map((details, i) => (
             <View key={`${i}-${details}`} style={styles.detailsBox}>
               <Text style={styles.detailsLabel}>REPORTED BY PHONE OR SMS</Text>
@@ -835,6 +872,7 @@ export default function MapScreen() {
             </View>
           </View>
           <Text style={styles.selectedDetail}>Location: {locationText}</Text>
+          <AiResult reportIds={selectedReportRefs.map((r) => r.id)} />
           {typedDetails.map((details, i) => (
             <View key={`${i}-${details}`} style={styles.detailsBox}>
               <Text style={styles.detailsLabel}>REPORTED BY PHONE OR SMS</Text>
@@ -898,6 +936,16 @@ export default function MapScreen() {
                     <Text style={[styles.statusBtnText, { color: theme.primary }]}>Arrived</Text>
                   </Pressable>
                 )
+              ) : null}
+              {selectedReport.status === 'responding' && selectedGroup ? (
+                <Pressable
+                  onPress={() => handleCancelDispatch(selectedGroup)}
+                  style={[styles.statusBtn, styles.statusBtnOutline, { borderColor: BORDER }]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel this dispatch"
+                >
+                  <Text style={[styles.statusBtnText, { color: TEXT_SECONDARY }]}>Cancel dispatch</Text>
+                </Pressable>
               ) : null}
               <Pressable
                 onPress={() => selectedGroup && handleStatusAction(selectedGroup)}

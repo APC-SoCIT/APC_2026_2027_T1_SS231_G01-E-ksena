@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, ScrollView, Pressable, ActivityIndicator, StyleSheet, Linking, Modal } from 'react-native';
 import { supabase } from '@/lib/supabase';
+import { AuditLogList } from '@/components/audit-log-list';
 import { useAuth } from '@/context/auth';
 import { useRoleTheme } from '@/context/role-theme';
 import { emergencyTypeLabel } from '@/lib/emergency';
@@ -644,11 +645,16 @@ export default function AdminScreen() {
           </View>
         </View>
       </Modal>
+
+      <View style={styles.auditSection}>
+        <AuditLogList />
+      </View>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
+  auditSection: { marginTop: Spacing.lg },
   screen: { flex: 1, backgroundColor: OFF_WHITE },
   container: { padding: Spacing.lg, paddingBottom: Spacing.xl },
   centre: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: OFF_WHITE },
