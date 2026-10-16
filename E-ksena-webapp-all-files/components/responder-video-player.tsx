@@ -20,43 +20,35 @@ const STUN_SERVERS: RTCIceServer[] = [
 ];
 
 /**
- * Built-in open TURN relay fallback for multi-network calls (e.g. cellular data ↔ Wi-Fi/Office LAN).
- * Allows traversing NAT and firewalls without requiring both devices to share the same hotspot/Wi-Fi.
+ * The relay (TURN) server, from three settings: EXPO_PUBLIC_TURN_URL (one or
+ * more addresses, comma-separated), EXPO_PUBLIC_TURN_USERNAME and
+ * EXPO_PUBLIC_TURN_CREDENTIAL. The phone app must use the same server.
+ *
+ * A relay is not optional in practice. A phone on mobile data sits behind its
+ * carrier's NAT, which a direct link cannot cross, so without one the call
+ * fails every time unless both sides happen to share a Wi-Fi network.
+ *
+ * There is deliberately no built-in fallback. The free openrelay.metered.ca
+ * relay this used to fall back to has been shut down (its name now points to
+ * 192.0.2.1, an address reserved for documentation), and a dead fallback only
+ * hid the fact that no relay was set up.
  */
-const DEFAULT_TURN_SERVERS: RTCIceServer[] = [
-  {
-    urls: [
-      'turn:openrelay.metered.ca:80',
-      'turn:openrelay.metered.ca:443',
-      'turn:openrelay.metered.ca:443?transport=tcp',
-      'turns:openrelay.metered.ca:443?transport=tcp',
-    ],
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-];
+const TURN_URLS = (process.env.EXPO_PUBLIC_TURN_URL ?? '')
+  .split(',')
+  .map((u) => u.trim())
+  .filter(Boolean);
 
-/**
- * Returns ICE servers including STUN and TURN relays.
- * Prioritizes user-provided EXPO_PUBLIC_TURN_URL credentials from environment variables,
- * and falls back to reliable open relay servers when none are set.
- */
+const HAS_TURN = TURN_URLS.length > 0;
+
 function iceServers(): RTCIceServer[] {
-  const url = process.env.EXPO_PUBLIC_TURN_URL;
-  if (!url) {
-    return [...STUN_SERVERS, ...DEFAULT_TURN_SERVERS];
-  }
+  if (!HAS_TURN) return STUN_SERVERS;
   return [
     ...STUN_SERVERS,
     {
-      urls: url
-        .split(',')
-        .map((u) => u.trim())
-        .filter(Boolean),
+      urls: TURN_URLS,
       username: process.env.EXPO_PUBLIC_TURN_USERNAME || undefined,
       credential: process.env.EXPO_PUBLIC_TURN_CREDENTIAL || undefined,
     },
-    ...DEFAULT_TURN_SERVERS,
   ];
 }
 
@@ -192,7 +184,9 @@ export function ResponderVideoPlayer({
         return 'The call was offered, but the phone sent no network addresses. Ask the caller to end the call and start it again.';
       }
       if (!remoteTypes.has('relay') && !localTypes.has('relay')) {
-        return 'The call could not establish a direct peer or relay link. Ensure both mobile and web are connected to the internet and have TURN configured.';
+        return HAS_TURN
+          ? 'No direct link and no relay link could be made. The relay server set in EXPO_PUBLIC_TURN_URL did not answer, or its username and password were refused. Check that the phone app uses the same relay.'
+          : 'No direct link could be made, and no relay server is set up. A phone on mobile data needs one: set EXPO_PUBLIC_TURN_URL, EXPO_PUBLIC_TURN_USERNAME and EXPO_PUBLIC_TURN_CREDENTIAL, on the web and in the phone app.';
       }
       return 'The connection to the caller dropped. They may have lost signal or closed the app.';
     };
