@@ -103,7 +103,7 @@ const HomeScreen: React.FC = () => {
             // Check if there is an active (unresolved) dispatch for it
             const { data: activeDispatch } = await supabase
               .from('dispatch')
-              .select('status, current_lat, current_lng, responder_id')
+              .select('status, current_lat, current_lng, responder_id, service_type')
               .eq('incident_id', latestIncident.incident_id)
               .neq('status', 'resolved')
               .maybeSingle();
@@ -137,7 +137,9 @@ const HomeScreen: React.FC = () => {
                 } : undefined,
                 dispatcherName: resp?.name || 'Emergency Responder',
                 dispatcherPhone: resp?.responder_phone_number,
-                serviceType: resp?.service_type,
+                // The dispatch classification belongs to the incident. The responder's
+                // specialty is only a fallback for older rows without service_type.
+                serviceType: activeDispatch.service_type || resp?.service_type,
                 status: activeDispatch.status,
               });
             }
@@ -259,7 +261,7 @@ const HomeScreen: React.FC = () => {
   }, [responderData, state.location]);
 
 
-  // Listen for dispatch live updates (status, current_lat, current_lng)
+  // Listen for dispatch live updates (classification, status, and location)
   useEffect(() => {
     if (!responderData?.incidentId) {
       if (dispatchChannelRef.current) {
@@ -276,7 +278,7 @@ const HomeScreen: React.FC = () => {
       try {
         const { data: dispatchRow, error } = await supabase
           .from('dispatch')
-          .select('status, current_lat, current_lng, location_updated_at')
+          .select('status, current_lat, current_lng, location_updated_at, service_type')
           .eq('incident_id', incidentId)
           .maybeSingle();
 
@@ -292,6 +294,7 @@ const HomeScreen: React.FC = () => {
             return {
               ...prev,
               status: dispatchRow.status || prev.status,
+              serviceType: dispatchRow.service_type || prev.serviceType,
               responderLocation: updatedLocation,
             };
           });
@@ -350,6 +353,7 @@ const HomeScreen: React.FC = () => {
             return {
               ...prev,
               status: newRecord.status || prev.status,
+              serviceType: newRecord.service_type || prev.serviceType,
               responderLocation: updatedLocation,
             };
           });
@@ -474,7 +478,9 @@ const HomeScreen: React.FC = () => {
                 <Text style={styles.responderName}>{responderData.dispatcherName}</Text>
                 <Text style={styles.incidentId}>Incident #{responderData.incidentId.substring(0, 8)}</Text>
                 {responderData.serviceType && (
-                  <Text style={styles.serviceType}>{responderData.serviceType}</Text>
+                  <Text style={styles.serviceType}>
+                    {`${responderData.serviceType.charAt(0).toUpperCase()}${responderData.serviceType.slice(1).toLowerCase()}`}
+                  </Text>
                 )}
               </View>
               {responderData.status && (

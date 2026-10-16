@@ -3,7 +3,7 @@ import { StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, Alert } fr
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { RTCPeerConnection, RTCIceCandidate, RTCSessionDescription, RTCView, mediaDevices, MediaStream } from 'react-native-webrtc';
-import { PhoneOff } from 'lucide-react-native';
+import { PhoneOff, SwitchCamera } from 'lucide-react-native';
 import { supabase } from '../../services/supabaseClient';
 import { useAuth } from '../../context/AuthContext';
 
@@ -11,6 +11,12 @@ const configuration = {
   iceServers: [
     {
       urls: 'stun:stun.l.google.com:19302'
+    },
+    {
+      urls: 'stun:stun1.l.google.com:19302'
+    },
+    {
+      urls: 'stun:stun2.l.google.com:19302'
     },
     {
       urls: [
@@ -35,26 +41,57 @@ export default function CallScreen() {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [isConnecting, setIsConnecting] = useState(true);
+  const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
+  const [isFrontCamera, setIsFrontCamera] = useState(true);
   
   const pc = useRef<RTCPeerConnection | null>(null);
   const channelRef = useRef<any>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const pendingRemoteCandidates = useRef<any[]>([]);
+  const callSessionRef = useRef(0);
 
   useEffect(() => {
     startCall();
     
     return () => {
-      endCall();
+      cleanupCall();
     };
   }, []);
 
+  const cleanupCall = () => {
+    // Invalidate any pending getUserMedia request from an older effect/session.
+    callSessionRef.current += 1;
+
+    localStreamRef.current?.getTracks().forEach(track => track.stop());
+    localStreamRef.current = null;
+    pendingRemoteCandidates.current = [];
+    pc.current?.close();
+    pc.current = null;
+
+    if (channelRef.current) {
+      void supabase.removeChannel(channelRef.current);
+      channelRef.current = null;
+    }
+  };
+
   const startCall = async () => {
+    const callSession = callSessionRef.current + 1;
+    callSessionRef.current = callSession;
+
     try {
       // 1. Get local media stream
       const stream = await mediaDevices.getUserMedia({
         audio: true,
         video: { width: 640, height: 480, frameRate: 30, facingMode: 'user' }
       }) as MediaStream;
+
+      // The permission prompt can resolve after the user has already left.
+      if (callSession !== callSessionRef.current) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
       
+      localStreamRef.current = stream;
       setLocalStream(stream);
 
       // 2. Initialize Peer Connection with STUN and TURN
@@ -62,6 +99,7 @@ export default function CallScreen() {
 
       // Add local tracks to PeerConnection
       stream.getTracks().forEach((track) => {
+        track.enabled = true;
         pc.current?.addTrack(track, stream);
       });
 
@@ -70,6 +108,10 @@ export default function CallScreen() {
         console.log('[WebRTC] Received remote stream track:', event.track?.kind);
         if (event.streams && event.streams[0]) {
           setRemoteStream(event.streams[0]);
+          if (event.track?.kind === 'video') {
+            setHasRemoteVideo(true);
+            event.track.onended = () => setHasRemoteVideo(false);
+          }
           setIsConnecting(false);
         }
       };
@@ -141,14 +183,25 @@ export default function CallScreen() {
                 console.log('[WebRTC] Setting remote description from responder answer');
                 const answerDesc = new RTCSessionDescription(signal.answer);
                 await pc.current.setRemoteDescription(answerDesc);
+
+                // Trickle ICE can arrive before the SDP answer. React Native WebRTC
+                // rejects those candidates, so apply them once a remote description exists.
+                const queuedCandidates = pendingRemoteCandidates.current.splice(0);
+                for (const candidateData of queuedCandidates) {
+                  await pc.current.addIceCandidate(new RTCIceCandidate(candidateData));
+                }
               }
               
               // Handle ICE Candidates
               if (signal.type === 'candidate' && pc.current && signal.candidate) {
                 try {
-                  console.log('[WebRTC] Adding remote ICE candidate');
-                  const candidate = new RTCIceCandidate(signal.candidate);
-                  await pc.current.addIceCandidate(candidate);
+                  if (!pc.current.remoteDescription) {
+                    console.log('[WebRTC] Queuing remote ICE candidate until answer is set');
+                    pendingRemoteCandidates.current.push(signal.candidate);
+                  } else {
+                    console.log('[WebRTC] Adding remote ICE candidate');
+                    await pc.current.addIceCandidate(new RTCIceCandidate(signal.candidate));
+                  }
                 } catch (candidateErr) {
                   console.warn('[WebRTC] Error adding ICE candidate:', candidateErr);
                 }
@@ -184,49 +237,89 @@ export default function CallScreen() {
   };
 
   const endCall = async () => {
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-    }
-    if (pc.current) {
-      pc.current.close();
-    }
-    if (channelRef.current) {
-      supabase.removeChannel(channelRef.current);
-    }
+    cleanupCall();
     navigation.goBack();
+  };
+
+  const flipCamera = () => {
+    const videoTrack = localStreamRef.current?.getVideoTracks()[0];
+    if (!videoTrack) return;
+
+    try {
+      videoTrack._switchCamera();
+      setIsFrontCamera(current => !current);
+    } catch (err) {
+      console.warn('[WebRTC] Could not switch camera:', err);
+      Alert.alert('Camera unavailable', 'Unable to switch cameras on this device.');
+    }
   };
 
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.videoContainer}>
-        {/* Remote Video (Responder) */}
-        {remoteStream ? (
+        {/* Use a remote surface only when the responder actually sends video. */}
+        {remoteStream && hasRemoteVideo ? (
           <RTCView
             streamURL={remoteStream.toURL()}
             style={styles.remoteVideo}
             objectFit="cover"
+            zOrder={0}
+          />
+        ) : localStream ? (
+          <RTCView
+            streamURL={localStream.toURL()}
+            style={styles.remoteVideo}
+            objectFit="cover"
+            mirror={isFrontCamera}
+            zOrder={0}
           />
         ) : (
           <View style={styles.connectingContainer}>
             <ActivityIndicator size="large" color="#ffffff" />
-            <Text style={styles.connectingText}>Waiting for responder to join...</Text>
+            <Text style={styles.connectingText}>Starting camera...</Text>
           </View>
         )}
 
-        {/* Local Video (Citizen) */}
-        {localStream && (
+        {/* Avoid overlapping Android video surfaces unless remote video exists. */}
+        {localStream && hasRemoteVideo && (
           <View style={styles.localVideoContainer}>
             <RTCView
               streamURL={localStream.toURL()}
               style={styles.localVideo}
               objectFit="cover"
+              mirror={isFrontCamera}
               zOrder={1}
             />
+          </View>
+        )}
+
+        {localStream && !hasRemoteVideo && (
+          <View style={styles.callStatus} pointerEvents="none">
+            {isConnecting ? (
+              <>
+                <ActivityIndicator size="small" color="#ffffff" />
+                <Text style={styles.callStatusText}>Waiting for responder to join...</Text>
+              </>
+            ) : (
+              <>
+                <Text style={styles.connectedText}>Responder connected</Text>
+                <Text style={styles.connectedSubtext}>Your live video and audio are being shared.</Text>
+              </>
+            )}
           </View>
         )}
       </View>
 
       <View style={styles.controls}>
+        <TouchableOpacity
+          style={styles.secondaryControlButton}
+          onPress={flipCamera}
+          disabled={!localStream}
+          accessibilityRole="button"
+          accessibilityLabel="Flip camera"
+        >
+          <SwitchCamera size={28} color="#ffffff" />
+        </TouchableOpacity>
         <TouchableOpacity style={styles.endCallButton} onPress={endCall}>
           <PhoneOff size={32} color="#ffffff" />
         </TouchableOpacity>
@@ -272,12 +365,52 @@ const styles = StyleSheet.create({
     marginTop: 16,
     fontSize: 16,
   },
+  connectedText: {
+    color: '#ffffff',
+    fontSize: 22,
+    fontWeight: '600',
+  },
+  connectedSubtext: {
+    color: '#d1d5db',
+    marginTop: 8,
+    fontSize: 15,
+    textAlign: 'center',
+    paddingHorizontal: 32,
+  },
+  callStatus: {
+    position: 'absolute',
+    top: 24,
+    left: 20,
+    right: 20,
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+  },
+  callStatusText: {
+    color: '#ffffff',
+    marginTop: 8,
+    fontSize: 15,
+  },
   controls: {
     position: 'absolute',
     bottom: 40,
     left: 0,
     right: 0,
+    flexDirection: 'row',
+    justifyContent: 'center',
     alignItems: 'center',
+    gap: 24,
+  },
+  secondaryControlButton: {
+    backgroundColor: 'rgba(55, 65, 81, 0.9)',
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 5,
   },
   endCallButton: {
     backgroundColor: '#dc2626',

@@ -214,6 +214,7 @@ export interface EmergencyReport {
     address?: string | null;
   };
   mediaUri?: string;
+  serviceType?: string;
   description?: string;
 }
 
@@ -345,7 +346,7 @@ export const sendVideoReport = async (
         userLocation: location,
         dispatcherName: report.assignedDispatcher?.name || 'Assigned Responder',
         dispatcherPhone: report.assignedDispatcher?.phone,
-        serviceType: incidentDetails.report.description,
+        serviceType: report.serviceType,
         responderBase: report.responderBase,
       });
     } else {
@@ -520,6 +521,7 @@ export const getIncidentDetails = async (incidentId: string): Promise<ReportResp
             address: backendIncident.responder_base.address ?? undefined,
           }
           : undefined,
+        serviceType: backendIncident.service_type,
         description: backendIncident.service_type
           ? `${backendIncident.service_type.charAt(0).toUpperCase() + backendIncident.service_type.slice(1)} Emergency`
           : 'Emergency Incident',
