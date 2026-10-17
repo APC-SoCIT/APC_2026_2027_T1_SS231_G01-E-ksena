@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -32,6 +32,7 @@ import {
   DANGER_BORDER,
 } from '@/constants/theme';
 import { signInResponder } from '@/lib/auth-service';
+import { lockedUntil, recordFailure, clearFailures } from '@/lib/login-throttle';
 
 const FEATURES: { icon: keyof typeof Ionicons.glyphMap; text: string }[] = [
   { icon: 'map-outline', text: 'Live emergency map for Makati City' },
@@ -54,23 +55,72 @@ export default function LoginScreen() {
   const { width } = useWindowDimensions();
   const wide = width >= WIDE_BREAKPOINT;
 
+  // Set while the form is paused after repeated wrong passwords. The tick
+  // keeps the countdown on the button current, and ends the pause on time.
+  const [lockEnd, setLockEnd] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!lockEnd) return;
+    const timer = setInterval(() => {
+      const t = Date.now();
+      setNow(t);
+      if (t >= lockEnd) {
+        setLockEnd(0);
+        setError(null);
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [lockEnd]);
+  const lockSeconds = lockEnd ? Math.max(0, Math.ceil((lockEnd - now) / 1000)) : 0;
+
+  const pause = (until: number) => {
+    setNow(Date.now());
+    setLockEnd(until);
+    setError(`Too many failed attempts. Try again in ${Math.ceil((until - Date.now()) / 1000)} seconds.`);
+  };
+
   const handleLogin = async () => {
     setError(null);
-    if (!email.trim() || !password.trim()) {
+    const address = email.trim();
+    if (!address || !password.trim()) {
       setError('Please enter your email and password.');
+      return;
+    }
+    const until = lockedUntil(address);
+    if (until) {
+      pause(until);
       return;
     }
     setLoading(true);
     try {
-      await signInResponder(email.trim(), password);
+      await signInResponder(address, password);
+      clearFailures(address);
       router.replace('/(tabs)');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Could not log in.';
       if (/email not confirmed/i.test(message)) {
-        router.push({ pathname: '/verify', params: { email: email.trim() } });
+        router.push({ pathname: '/verify', params: { email: address } });
         return;
       }
-      setError(/invalid login credentials/i.test(message) ? 'Incorrect email or password.' : message);
+      // Supabase's own limit on attempts, which applies however the form is used.
+      if (/rate limit|too many requests/i.test(message)) {
+        setError('Too many sign-in attempts. Wait a few minutes, then try again.');
+        return;
+      }
+      if (/invalid login credentials/i.test(message)) {
+        const result = recordFailure(address);
+        if (result.lockedUntil) {
+          pause(result.lockedUntil);
+        } else if (result.triesLeft <= 2) {
+          setError(
+            `Incorrect email or password. ${result.triesLeft} ${result.triesLeft === 1 ? 'try' : 'tries'} left before log in is paused.`
+          );
+        } else {
+          setError('Incorrect email or password.');
+        }
+        return;
+      }
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -141,6 +191,7 @@ export default function LoginScreen() {
             placeholderTextColor={TEXT_SECONDARY}
             autoCapitalize="none"
             keyboardType="email-address"
+            accessibilityLabel="Email"
           />
 
           <Text style={styles.label}>Password</Text>
@@ -152,17 +203,24 @@ export default function LoginScreen() {
               placeholder="Enter password"
               placeholderTextColor={TEXT_SECONDARY}
               secureTextEntry={!showPassword}
+              accessibilityLabel="Password"
             />
-            <Pressable onPress={() => setShowPassword((v) => !v)} hitSlop={8} style={styles.eyeButton}>
+            <Pressable
+              onPress={() => setShowPassword((v) => !v)}
+              hitSlop={8}
+              style={styles.eyeButton}
+              accessibilityRole="button"
+              accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
+            >
               <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color={TEXT_SECONDARY} />
             </Pressable>
           </View>
 
           <PrimaryButton
-            title={loading ? 'Logging in…' : 'Log in'}
+            title={loading ? 'Logging in…' : lockSeconds ? `Try again in ${lockSeconds}s` : 'Log in'}
             onPress={handleLogin}
             style={styles.button}
-            disabled={loading}
+            disabled={loading || lockSeconds > 0}
             color={BRAND_RED}
             hoverColor={BRAND_RED_HOVER}
           />

@@ -13,6 +13,7 @@ type AuditRow = {
   previous_value: string | null;
   new_value: string | null;
   report_count: number | null;
+  detail: Record<string, unknown> | null;
 };
 
 const ACTION_LABELS: Record<string, string> = {
@@ -20,7 +21,24 @@ const ACTION_LABELS: Record<string, string> = {
   reassign: 'Reassigned',
   video_delete: 'Video deleted',
   dispatch_cancel: 'Dispatch cancelled',
+  incident_submitted: 'Incident submitted',
+  ai_result: 'AI result',
 };
+
+/** The line under the action's name. An AI result reads better as type and score than as a before and after. */
+function changeText(row: AuditRow): string {
+  if (row.action === 'ai_result') {
+    const raw = row.detail?.confidence;
+    const n = typeof raw === 'number' || typeof raw === 'string' ? Number(raw) : NaN;
+    const percent = Number.isNaN(n) ? '' : ` · ${Math.round(n > 1 ? n : n * 100)}% confidence`;
+    return `: ${row.new_value ?? 'unclassified'}${percent}`;
+  }
+  if (row.action === 'incident_submitted') {
+    const id = row.detail?.incident_id;
+    return typeof id === 'string' ? `: incident ${id.slice(0, 8)}` : '';
+  }
+  return row.previous_value || row.new_value ? `: ${row.previous_value ?? '—'} → ${row.new_value ?? '—'}` : '';
+}
 
 const LIMIT = 50;
 
@@ -37,7 +55,7 @@ export function AuditLogList() {
     setError(null);
     const { data, error: loadError } = await supabase
       .from('dispatch_audit_log')
-      .select('id, occurred_at, actor_username, actor_role, action, previous_value, new_value, report_count')
+      .select('id, occurred_at, actor_username, actor_role, action, previous_value, new_value, report_count, detail')
       .order('occurred_at', { ascending: false })
       .limit(LIMIT);
     if (loadError) {
@@ -67,9 +85,7 @@ export function AuditLogList() {
         <View key={row.id} style={styles.entry}>
           <Text style={styles.entryTitle}>
             {ACTION_LABELS[row.action] ?? row.action}
-            {row.previous_value || row.new_value
-              ? `: ${row.previous_value ?? '—'} → ${row.new_value ?? '—'}`
-              : ''}
+            {changeText(row)}
           </Text>
           <Text style={styles.entryDetail}>
             {formatManilaTime(row.occurred_at) ?? row.occurred_at} (Manila time) · {row.actor_username ?? 'Unknown'}

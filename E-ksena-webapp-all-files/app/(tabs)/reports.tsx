@@ -9,6 +9,7 @@ import { useAuth } from '@/context/auth';
 import { useRoleTheme } from '@/context/role-theme';
 import { publicVideoUrl } from '@/lib/incident-video';
 import { formatManilaTime } from '@/lib/reporter-display';
+import { useOnReconnect } from '@/lib/use-online';
 import { Spacing, FontSizes, TEXT_PRIMARY, TEXT_SECONDARY, WHITE, OFF_WHITE, BORDER, Radius, CardShadow, DANGER, DANGER_BG, DANGER_BORDER, SUCCESS, SUCCESS_BG } from '@/constants/theme';
 import {
   getEmergencyTypesForRole,
@@ -148,6 +149,10 @@ export default function ReportsScreen() {
       fetchReports();
     }, [fetchReports])
   );
+
+  // Changes made while the connection was down never arrive live, so the
+  // list is read again once it is back (TC_W_Offline_01).
+  useOnReconnect(fetchReports);
 
   useEffect(() => {
     if (allowedTypes.length === 0) return;

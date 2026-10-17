@@ -38,7 +38,9 @@ import { PrimaryButton } from '@/components/primary-button';
 import { recordDispatchAction } from '@/lib/audit';
 import { notifyReportersAccepted, type AcceptanceNotice } from '@/lib/sms-messages';
 import { startTrip, setTripStatus, shareTripPosition, cancelTrip, SHARE_EVERY_MS, SHARE_MIN_MOVE_KM } from '@/lib/dispatch';
-import { AiResult } from '@/components/ai-result';
+import { AiResult, useAiConfidence, ACTIONABLE_THRESHOLD } from '@/components/ai-result';
+import { DispatchTimeline } from '@/components/dispatch-timeline';
+import { useOnReconnect } from '@/lib/use-online';
 import { ResponderVideoPlayer } from '@/components/responder-video-player';
 import { ReporterDetails } from '@/components/reporter-details';
 import { publicVideoUrl } from '@/lib/incident-video';
@@ -74,6 +76,8 @@ interface EmergencyReport {
    */
   details: string | null;
 }
+
+const OFFLINE_MESSAGE = 'You are offline, so nothing was saved. Try again when the connection is back.';
 
 function people(count: number): string {
   return count === 1 ? '1 reporter' : `${count} reporters`;
@@ -143,6 +147,10 @@ export default function MapScreen() {
   const [tripsStarted, setTripsStarted] = useState(0);
   const lastShared = useRef<{ lat: number; lng: number; at: number } | null>(null);
   const geocoderRef = useRef<google.maps.Geocoder | null>(null);
+  // Low-confidence cards this responder has watched and confirmed as real.
+  const [verifiedKeys, setVerifiedKeys] = useState<string[]>([]);
+  // Bumped after each audit write, so the card's status history is read again.
+  const [historyTick, setHistoryTick] = useState(0);
 
   const mapHeight = 640;
   const containerStyle = useMemo(() => ({ width: '100%', height: mapHeight }), [mapHeight]);
@@ -171,6 +179,23 @@ export default function MapScreen() {
     () => groups.find((g) => g.members.some((m) => m.id === selectedId)) ?? null,
     [groups, selectedId]
   );
+
+  // A card is held back from dispatch while the AI is under 60% sure of every
+  // report in it and no responder has confirmed it yet (TC_W_AI_04). One
+  // caller the AI is sure about is enough to make the emergency actionable,
+  // and a report with no score is never held: missing data must not hide an
+  // emergency from the people who would answer it.
+  const confidences = useAiConfidence(reports.map((r) => r.id));
+  const isHeld = useCallback(
+    (g: ReportGroup<EmergencyReport>) => {
+      if (g.lead.status !== 'matched' || verifiedKeys.includes(g.key)) return false;
+      const scores = g.members.map((m) => confidences[m.id]);
+      if (scores.some((s) => s === undefined)) return false;
+      return Math.max(...(scores as number[])) < ACTIONABLE_THRESHOLD;
+    },
+    [confidences, verifiedKeys]
+  );
+  const selectedHeld = selectedGroup ? isHeld(selectedGroup) : false;
 
   const selectedReport = selectedGroup?.lead ?? null;
   // A grouped card may hold several callers; show the first recording any of them sent.
@@ -254,6 +279,10 @@ export default function MapScreen() {
       fetchReports();
     }, [fetchReports])
   );
+
+  // Live updates sent while the connection was down are lost, so the list is
+  // read again as soon as it is back (TC_W_Offline_01).
+  const online = useOnReconnect(fetchReports);
 
   useEffect(() => {
     if (allowedTypes.length === 0) return;
@@ -375,6 +404,10 @@ export default function MapScreen() {
   const handleStatusAction = async (group: ReportGroup<EmergencyReport>) => {
     const action = nextStatusAction(group.lead.status);
     if (!action) return;
+    if (!online) {
+      setStatusError(OFFLINE_MESSAGE);
+      return;
+    }
     // A second click while the first is still saving used to run the whole
     // action again: two entries in the audit log for one Accept, and now it
     // would mean two rounds of texts as well.
@@ -392,18 +425,39 @@ export default function MapScreen() {
     action: NonNullable<ReturnType<typeof nextStatusAction>>
   ) => {
     setStatusError(null);
-    const ids = group.members.map((m) => m.id);
     const update: Record<string, unknown> = { status: action.next };
     if (action.next === 'responding') {
       update.responder_username = user?.username ?? null;
     }
-    const { error } = await supabase.from('reports').update(update).in('report_id', ids);
+    // Only reports still in the state this card shows are changed. If another
+    // responder accepted the same emergency a moment ago, its reports are no
+    // longer "matched", so the update skips them and this responder is told,
+    // instead of quietly taking the emergency over (TC_W_Dispatch_06). The
+    // database applies the condition row by row, so of two accepts sent at
+    // the same instant exactly one wins.
+    const { data: changedRows, error } = await supabase
+      .from('reports')
+      .update(update)
+      .in('report_id', group.members.map((m) => m.id))
+      .eq('status', group.lead.status)
+      .select('report_id');
     if (error) {
       const hint = /(status|responder_username).*column|column.*(status|responder_username)/i.test(error.message)
         ? ' Run supabase/reports-add-status.sql in the Supabase SQL Editor to add the missing columns.'
         : '';
       setStatusError(error.message + hint);
       Alert.alert('Could not update status', error.message + hint);
+      return;
+    }
+    const ids = ((changedRows ?? []) as { report_id: unknown }[]).map((row) => String(row.report_id));
+    if (ids.length === 0) {
+      const message =
+        action.next === 'responding'
+          ? 'Another responder has already accepted this emergency.'
+          : 'Someone else changed this emergency a moment ago, so nothing was saved.';
+      setStatusError(message);
+      Alert.alert('Not saved', message);
+      fetchReports();
       return;
     }
     const auditError = await recordDispatchAction(
@@ -423,6 +477,7 @@ export default function MapScreen() {
     if (auditError) {
       setStatusError(`Status saved, but it was not recorded in the audit log: ${auditError}`);
     }
+    setHistoryTick((n) => n + 1);
 
     // Done ends the trip on the dispatch row as well, which is what tells the
     // reporter's app the responder has finished. Waited for, so that if it
@@ -481,6 +536,10 @@ export default function MapScreen() {
   // Cancel takes the responder off the trip: the report goes back to the
   // list as unaccepted, and the reporter's app stops showing them on the way.
   const handleCancelDispatch = async (group: ReportGroup<EmergencyReport>) => {
+    if (!online) {
+      setStatusError(OFFLINE_MESSAGE);
+      return;
+    }
     if (statusBusy.current) return;
     statusBusy.current = true;
     setStatusError(null);
@@ -508,12 +567,17 @@ export default function MapScreen() {
       if (auditError) {
         setStatusError(`Dispatch cancelled, but it was not recorded in the audit log: ${auditError}`);
       }
+      setHistoryTick((n) => n + 1);
     } finally {
       statusBusy.current = false;
     }
   };
 
   const handleArrived = async (group: ReportGroup<EmergencyReport>) => {
+    if (!online) {
+      setStatusError(OFFLINE_MESSAGE);
+      return;
+    }
     if (statusBusy.current) return;
     statusBusy.current = true;
     setStatusError(null);
@@ -538,9 +602,36 @@ export default function MapScreen() {
       if (auditError) {
         setStatusError(`Arrival marked, but it was not recorded in the audit log: ${auditError}`);
       }
+      setHistoryTick((n) => n + 1);
     } finally {
       statusBusy.current = false;
     }
+  };
+
+  // A low-confidence card stays held back until a responder has watched the
+  // video and says it is real. That call goes in the audit log like any other.
+  const handleConfirmReal = async (group: ReportGroup<EmergencyReport>) => {
+    if (!online) {
+      setStatusError(OFFLINE_MESSAGE);
+      return;
+    }
+    setStatusError(null);
+    setVerifiedKeys((prev) => (prev.includes(group.key) ? prev : [...prev, group.key]));
+    const ids = group.members.map((m) => m.id);
+    const auditError = await recordDispatchAction(
+      {
+        action: 'status_change',
+        previousValue: 'unverified',
+        newValue: 'verified',
+        reportIds: ids,
+        detail: { reason: 'low_confidence', incident_id: group.lead.incidentId, grouped_reports: ids.length },
+      },
+      { username: user?.username, role: user?.role }
+    );
+    if (auditError) {
+      setStatusError(`Confirmed, but it was not recorded in the audit log: ${auditError}`);
+    }
+    setHistoryTick((n) => n + 1);
   };
 
   // Hands the incident to another responder service by changing its classification.
@@ -655,12 +746,12 @@ export default function MapScreen() {
               key={g.key}
               position={{ lat: g.lat, lng: g.lng }}
               title={
-                g.members.length > 1
+                (g.members.length > 1
                   ? `${emergencyTypeLabel(g.lead.classified_as)} — ${g.members.length} reports in this area`
-                  : emergencyTypeLabel(g.lead.classified_as)
+                  : emergencyTypeLabel(g.lead.classified_as)) + (isHeld(g) ? ' — needs verification' : '')
               }
               icon={
-                g.lead.outsideArea
+                g.lead.outsideArea || isHeld(g)
                   ? OUTSIDE_AREA_ICON
                   : MARKER_ICON_BY_STATUS[g.lead.status] ?? MARKER_ICON_BY_STATUS.matched
               }
@@ -755,7 +846,7 @@ export default function MapScreen() {
             {route?.duration?.text ? <Text style={styles.etaAway}>{route.duration.text} away</Text> : null}
           </View>
           <Text style={styles.selectedDetail}>{locationText}</Text>
-          <AiResult reportIds={selectedReportRefs.map((r) => r.id)} />
+          <AiResult reportIds={selectedReportRefs.map((r) => r.id)} held={selectedHeld} />
           {typedDetails.map((details, i) => (
             <View key={`${i}-${details}`} style={styles.detailsBox}>
               <Text style={styles.detailsLabel}>REPORTED BY PHONE OR SMS</Text>
@@ -811,6 +902,10 @@ export default function MapScreen() {
           ) : null}
 
           <ReporterDetails reports={selectedReportRefs} />
+          <DispatchTimeline
+            reportIds={selectedReportRefs.map((r) => r.id)}
+            refreshKey={`${selectedReport.status}:${historyTick}`}
+          />
 
           {statusError ? <Text style={styles.statusErrorText}>{statusError}</Text> : null}
 
@@ -863,12 +958,25 @@ export default function MapScreen() {
                 </View>
               ) : null}
             </View>
-            <Pressable
-              onPress={() => selectedGroup && handleStatusAction(selectedGroup)}
-              style={[styles.acceptBtn, { backgroundColor: theme.primary }]}
-            >
-              <Text style={styles.acceptBtnText}>Accept</Text>
-            </Pressable>
+            {selectedHeld ? (
+              <Pressable
+                onPress={() => selectedGroup && handleConfirmReal(selectedGroup)}
+                style={[styles.acceptBtn, styles.confirmBtn]}
+                accessibilityRole="button"
+                accessibilityLabel="I watched the video and this is a real emergency"
+              >
+                <Text style={styles.acceptBtnText}>Confirm it&apos;s real</Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                onPress={() => selectedGroup && handleStatusAction(selectedGroup)}
+                style={[styles.acceptBtn, { backgroundColor: theme.primary }]}
+                accessibilityRole="button"
+                accessibilityLabel="Accept this emergency"
+              >
+                <Text style={styles.acceptBtnText}>Accept</Text>
+              </Pressable>
+            )}
           </View>
           )}
         </>
@@ -928,6 +1036,10 @@ export default function MapScreen() {
             </Text>
           ) : null}
           <ReporterDetails reports={selectedReportRefs} />
+          <DispatchTimeline
+            reportIds={selectedReportRefs.map((r) => r.id)}
+            refreshKey={`${selectedReport.status}:${historyTick}`}
+          />
 
           {statusError ? <Text style={styles.statusErrorText}>{statusError}</Text> : null}
           {!selectedReport.outsideArea && nextStatusAction(selectedReport.status) ? (
@@ -969,13 +1081,16 @@ export default function MapScreen() {
     </View>
   ) : null;
 
+  const activeGroups = groups.filter((g) => !isHeld(g));
+  const heldGroups = groups.filter(isHeld);
+
   const emergencyList = (
     <>
-      <Text style={styles.listTitle}>Active Emergencies ({groups.length})</Text>
-      {groups.length === 0 ? (
+      <Text style={styles.listTitle}>Active Emergencies ({activeGroups.length})</Text>
+      {activeGroups.length === 0 ? (
         <Text style={styles.emptyText}>No active emergencies matched to your role right now.</Text>
       ) : (
-        groups.map((g) => (
+        activeGroups.map((g) => (
           <Pressable
             key={g.key}
             // Pressing the open emergency again folds it away.
@@ -997,6 +1112,36 @@ export default function MapScreen() {
           </Pressable>
         ))
       )}
+
+      {heldGroups.length > 0 ? (
+        <>
+          <Text style={[styles.listTitle, styles.heldTitle]}>Needs Verification ({heldGroups.length})</Text>
+          <Text style={styles.heldHint}>
+            The AI is less than {Math.round(ACTIONABLE_THRESHOLD * 100)}% sure of these. Open one, watch the
+            video, and confirm it before it can be accepted.
+          </Text>
+          {heldGroups.map((g) => (
+            <Pressable
+              key={g.key}
+              onPress={() => setSelectedId(g.members.some((m) => m.id === selectedId) ? null : g.lead.id)}
+              accessibilityState={{ expanded: g.members.some((m) => m.id === selectedId) }}
+              style={[
+                styles.listCard,
+                styles.heldCard,
+                g.members.some((m) => m.id === selectedId) && { borderColor: theme.primary },
+              ]}
+            >
+              <Text style={[styles.listCardTitle, styles.heldCardTitle]}>
+                {emergencyTypeLabel(g.lead.classified_as)}?
+              </Text>
+              <Text style={styles.listCardSubtitle}>
+                Low AI confidence · not actionable yet
+                {g.members.length > 1 ? ` · ${g.members.length} reports in this area` : ''}
+              </Text>
+            </Pressable>
+          ))}
+        </>
+      ) : null}
     </>
   );
 
@@ -1329,6 +1474,25 @@ const styles = StyleSheet.create({
     color: TEXT_SECONDARY,
     textAlign: 'center',
     paddingVertical: Spacing.lg,
+  },
+  heldTitle: {
+    marginTop: Spacing.lg,
+    marginBottom: Spacing.xs,
+  },
+  heldHint: {
+    fontSize: FontSizes.xs,
+    color: TEXT_SECONDARY,
+    marginBottom: Spacing.sm,
+  },
+  heldCard: {
+    backgroundColor: OFF_WHITE,
+    borderStyle: 'dashed',
+  },
+  heldCardTitle: {
+    color: TEXT_SECONDARY,
+  },
+  confirmBtn: {
+    backgroundColor: '#475569',
   },
   errorCard: {
     backgroundColor: DANGER_BG,

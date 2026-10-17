@@ -6,6 +6,7 @@ import { AuthProvider, useAuth } from '@/context/auth';
 import { INITIAL_URL_HASH, INITIAL_URL_SEARCH } from '@/lib/supabase';
 import { IncidentStatusProvider } from '@/context/incident-status';
 import { RoleThemeProvider } from '@/context/role-theme';
+import { OfflineBanner } from '@/components/offline-banner';
 
 /**
  * Supabase sends the recovery token to the project's Site URL when the
@@ -110,7 +111,10 @@ export default function RootLayout() {
       <RoleThemeProvider>
         <IncidentStatusProvider>
           <AuthGate>
-            <RootStack />
+            <View style={{ flex: 1 }}>
+              <OfflineBanner />
+              <RootStack />
+            </View>
           </AuthGate>
         </IncidentStatusProvider>
       </RoleThemeProvider>

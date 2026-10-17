@@ -140,6 +140,11 @@ END $$;
 -- responder at random when the report came in; whoever accepts replaces
 -- them, because they are the one actually going. An incident with no
 -- dispatch row yet gets one.
+--
+-- A trip another responder has already accepted (en_route or arrived) is not
+-- taken from them: the caller gets an error instead (TC_W_Dispatch_06). Two
+-- accepts of the same incident arriving together are run one after the
+-- other by the per-incident lock, so the second always sees the first.
 CREATE OR REPLACE FUNCTION public.dispatch_accept(report_ids TEXT[])
 RETURNS INTEGER
 LANGUAGE plpgsql
@@ -174,6 +179,17 @@ BEGIN
         OR EXISTS (SELECT 1 FROM public.admins a WHERE a.auth_user_id = auth.uid())
       )
   LOOP
+    PERFORM pg_advisory_xact_lock(hashtext('dispatch_accept:' || target.incident_id));
+
+    IF EXISTS (
+      SELECT 1 FROM public.dispatch d
+      WHERE d.incident_id::TEXT = target.incident_id
+        AND d.status IN ('en_route', 'arrived')
+        AND d.responder_id IS DISTINCT FROM me.responder_id
+    ) THEN
+      RAISE EXCEPTION 'Another responder has already accepted this emergency and is on the way.';
+    END IF;
+
     UPDATE public.dispatch d
        SET responder_id = me.responder_id,
            responder_phone_number = me.responder_phone_number,
