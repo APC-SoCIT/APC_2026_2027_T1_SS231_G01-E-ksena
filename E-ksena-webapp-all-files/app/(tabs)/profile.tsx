@@ -4,6 +4,7 @@ import { useAuth } from '@/context/auth';
 import { useRoleTheme } from '@/context/role-theme';
 import { PrimaryButton } from '@/components/primary-button';
 import { PhoneInput, toE164, fromE164, isValidPhone } from '@/components/phone-input';
+import { MaterialIcons } from '@expo/vector-icons';
 import { changePassword } from '@/lib/auth-service';
 import { passwordProblems } from '@/lib/password';
 import {
@@ -89,6 +90,7 @@ export default function ProfileScreen() {
   const [confirmPw, setConfirmPw] = useState('');
   const [pwNote, setPwNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [pwSaving, setPwSaving] = useState(false);
+  const [pwOpen, setPwOpen] = useState(false);
 
   // Changing the password asks for the current one first, so an unlocked
   // browser left open is not enough to take the account over.
@@ -123,7 +125,23 @@ export default function ProfileScreen() {
 
   const passwordSection = (
     <View style={[styles.card, CardShadow]}>
-      <Text style={styles.sectionTitle}>Change password</Text>
+      {/* Folded away until asked for: changing a password is rare, and the
+          fields should not sit open on every visit to Profile. */}
+      <Pressable
+        onPress={() => {
+          setPwOpen((open) => !open);
+          setPwNote(null);
+        }}
+        style={styles.dropHeader}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: pwOpen }}
+        accessibilityLabel="Change password"
+      >
+        <Text style={[styles.sectionTitle, styles.dropTitle]}>Change password</Text>
+        <MaterialIcons name={pwOpen ? 'keyboard-arrow-up' : 'keyboard-arrow-down'} size={26} color={TEXT_SECONDARY} />
+      </Pressable>
+      {pwOpen ? (
+      <View style={styles.dropBody}>
       {(
         [
           ['Current password', currentPw, setCurrentPw],
@@ -156,6 +174,8 @@ export default function ProfileScreen() {
         style={styles.saveBtn}
         disabled={pwSaving}
       />
+      </View>
+      ) : null}
     </View>
   );
 
@@ -298,13 +318,26 @@ const styles = StyleSheet.create({
     color: TEXT_PRIMARY,
     marginBottom: Spacing.md,
   },
+  dropHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  dropTitle: {
+    marginBottom: 0,
+  },
+  dropBody: {
+    marginTop: Spacing.md,
+  },
   lastFieldRow: {
     marginBottom: 0,
   },
   label: {
     fontSize: FontSizes.sm,
     color: TEXT_SECONDARY,
-    minWidth: Platform.OS === 'web' ? 120 : undefined,
+    // A fixed width, so every field starts at the same place however long
+    // its label is ("Confirm new password" pushed its box out of line).
+    width: Platform.OS === 'web' ? 150 : undefined,
   },
   value: {
     fontSize: FontSizes.body,
