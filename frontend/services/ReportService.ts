@@ -3,6 +3,7 @@
 
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
+import { saveActiveIncident } from './activeIncidentStorage';
 
 const PUBLIC_ENV_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
 
@@ -312,6 +313,17 @@ export const sendVideoReport = async (
     }
 
     const incidentId = createResp.data.incident_id;
+    // Persist before the asynchronous classification/assignment delay so an
+    // accidental app close cannot lose the active report.
+    if (userId) {
+      await saveActiveIncident(userId, {
+        incidentId,
+        userLocation: location,
+        responderStart: { latitude: location.latitude, longitude: location.longitude },
+        dispatcherName: 'Finding an emergency responder…',
+        serviceType,
+      });
+    }
     console.log(`[REAL API] ✅ Incident successfully created with ID: ${incidentId}`);
     console.log(`[REAL API] Now waiting 5 seconds for AI analysis and responder assignment...`);
 

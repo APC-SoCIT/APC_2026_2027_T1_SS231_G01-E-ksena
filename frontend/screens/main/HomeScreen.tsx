@@ -365,13 +365,15 @@ const HomeScreen: React.FC = () => {
       .on(
         'postgres_changes',
         {
-          event: 'UPDATE',
+          // A report restored from local storage may subscribe before the
+          // backend inserts its dispatch row, so handle both INSERT and UPDATE.
+          event: '*',
           schema: 'public',
           table: 'dispatch',
           filter: `incident_id=eq.${incidentId}`,
         },
         (payload) => {
-          const newRecord = payload.new;
+          const newRecord = payload.new as any;
           console.log('[DISPATCH] Realtime update received:', newRecord);
 
           if (!newRecord) return;
