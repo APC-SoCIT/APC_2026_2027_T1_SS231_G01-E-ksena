@@ -33,14 +33,23 @@ function useRecoveryRedirect() {
   }, [router]);
 }
 
+/**
+ * Whether every account must pass the two-step code screen (app/mfa.tsx)
+ * before the dashboard opens. Switched off for now, so sign-in needs only the
+ * password; set it back to true to require the authenticator code again.
+ * Accounts that already set up an authenticator keep it either way.
+ */
+const MFA_REQUIRED = false;
+
 function RootStack() {
   const { isResponder, isAdminOnly, mfaStatus } = useAuth();
   // An admin with no service is let in as well; which screens it then finds
   // inside is decided by the drawer. Either way the second sign-in step has to
   // be done first: until then the only screen is the code screen.
   const signedIn = isResponder || isAdminOnly;
-  const canEnter = signedIn && mfaStatus === 'ok';
-  const needsMfa = signedIn && mfaStatus !== 'ok';
+  const mfaDone = !MFA_REQUIRED || mfaStatus === 'ok';
+  const canEnter = signedIn && mfaDone;
+  const needsMfa = signedIn && !mfaDone;
   useRecoveryRedirect();
   const headerOptions = {
     headerStyle: { backgroundColor: BRAND_RED },
