@@ -735,6 +735,15 @@ export default function MapScreen() {
 
   const selectedCard = selectedReport ? (
     <View style={[styles.card, CardShadow, styles.selectedCard]}>
+      <Pressable
+        onPress={() => setSelectedId(null)}
+        hitSlop={10}
+        style={styles.closeCardBtn}
+        accessibilityRole="button"
+        accessibilityLabel="Close this emergency"
+      >
+        <MaterialIcons name="close" size={22} color={TEXT_SECONDARY} />
+      </Pressable>
       {selectedReport.status === 'matched' ? (
 
         <>
@@ -969,7 +978,11 @@ export default function MapScreen() {
         groups.map((g) => (
           <Pressable
             key={g.key}
-            onPress={() => setSelectedId(g.lead.id)}
+            // Pressing the open emergency again folds it away.
+            onPress={() =>
+              setSelectedId(g.members.some((m) => m.id === selectedId) ? null : g.lead.id)
+            }
+            accessibilityState={{ expanded: g.members.some((m) => m.id === selectedId) }}
             style={[
               styles.listCard,
               CardShadow,
@@ -1116,6 +1129,14 @@ const styles = StyleSheet.create({
     fontSize: FontSizes.xs,
     fontWeight: '600',
     color: SUCCESS,
+  },
+  closeCardBtn: {
+    position: 'absolute',
+    top: Spacing.sm,
+    right: Spacing.sm,
+    zIndex: 2,
+    padding: 4,
+    borderRadius: Radius.sm,
   },
   statusActions: {
     flexDirection: 'row',
